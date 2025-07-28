@@ -15,10 +15,16 @@ class Config:
         self.idx = 0
         self.theme = self.themes[self.idx]
         self.font = pygame.font.SysFont('monospace', 18, bold=True)
-        self.move_sound = Sound(
-            os.path.join('assets/sounds/move.wav'))
-        self.capture_sound = Sound(
-            os.path.join('assets/sounds/capture.wav'))
+        self.move_sound = self._load_sound('move.wav')
+        self.capture_sound = self._load_sound('capture.wav')
+        self.check_sound = self._load_sound('check.wav')
+
+    def _load_sound(self, filename):
+        path = os.path.join('assets/sounds', filename)
+        if os.path.exists(path):
+            return Sound(path)
+        print(f"Warning: Sound file not found - {path}")
+        return None
 
     def change_theme(self):
         self.idx += 1

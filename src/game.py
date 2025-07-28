@@ -1,6 +1,6 @@
-# [file name]: game.py
-# [file content begin]
 import pygame
+import time
+from threading import Thread
 from const import *
 from board import Board
 from dragger import Dragger
@@ -8,9 +8,35 @@ from config import Config
 from square import Square
 from engine import ChessEngine
 from move import Move
+from piece import King
+
+class EngineWorker(Thread):
+    def __init__(self, game, fen):
+        super().__init__()
+        self.game = game
+        self.fen = fen
+        self.move = None
+
+    def run(self):
+        # Get best move from engine
+        self.game.engine.set_position(self.fen)
+        uci_move = self.game.engine.get_best_move()
+        
+        if uci_move:
+            col_map = {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7}
+            try:
+                from_col = col_map[uci_move[0]]
+                from_row = 8 - int(uci_move[1])
+                to_col = col_map[uci_move[2]]
+                to_row = 8 - int(uci_move[3])
+                
+                initial = Square(from_row, from_col)
+                final = Square(to_row, to_col)
+                self.move = Move(initial, final)
+            except (KeyError, ValueError):
+                pass
 
 class Game:
-
     def __init__(self):
         self.next_player = 'white'
         self.hovered_sqr = None
@@ -24,8 +50,17 @@ class Game:
         self.engine = ChessEngine()
         self.depth = 15
         self.level = 10
-        self.game_mode = 0  # 0: human vs human, 1: human vs engine, 2: engine vs engine
-        self.evaluation = None  # Store the last evaluation
+        self.game_mode = 0
+        self.evaluation = None
+        
+        # Game state
+        self.game_over = False
+        self.winner = None
+        self.check_alert = None
+        
+        # Threading
+        self.engine_thread = None
+        self.pending_engine_move = None
 
     # Game mode methods
     def set_game_mode(self, mode):
@@ -41,7 +76,6 @@ class Game:
             self.engine_black = True
 
     # blit methods
-
     def show_bg(self, surface):
         theme = self.config.theme
         
@@ -67,7 +101,7 @@ class Game:
                 if row == 7:
                     # label
                     lbl = self.config.font.render(Square.get_alphacol(col), 1, coord_color)
-                    lbl_pos = (col * SQSIZE + 5, HEIGHT - 20)  # Left-aligned
+                    lbl_pos = (col * SQSIZE + 5, HEIGHT - 20)
                     # blit
                     surface.blit(lbl, lbl_pos)
         
@@ -78,7 +112,6 @@ class Game:
             2: "Engine vs Engine"
         }[self.game_mode]
         
-        # Change text color to white and adjust position left
         mode_surface = self.config.font.render(mode_text, True, (255, 255, 255))
         surface.blit(mode_surface, (WIDTH - 250, 10))
         
@@ -98,7 +131,6 @@ class Game:
             value = self.evaluation['value']
             
             if eval_type == 'cp':
-                # Convert centipawns to pawn advantage
                 score = value / 100.0
                 eval_text = f"Eval: {score:+.2f}"
             else:  # mate
@@ -112,15 +144,30 @@ class Game:
         level_info = f"Level: {self.level}"
         level_surface = self.config.font.render(level_info, True, (255, 255, 255))
         surface.blit(level_surface, (WIDTH - 150, 40))
+        
+        # Display game over message
+        if self.game_over:
+            font = pygame.font.SysFont('monospace', 40, bold=True)
+            if self.winner:
+                text = f"{self.winner.capitalize()} wins!"
+            else:
+                text = "Draw!"
+            text_surface = font.render(text, True, (255, 0, 0))
+            text_rect = text_surface.get_rect(center=(WIDTH//2, HEIGHT//2))
+            surface.blit(text_surface, text_rect)
+            
+            restart_font = pygame.font.SysFont('monospace', 24)
+            restart_text = "Press 'R' to restart"
+            restart_surface = restart_font.render(restart_text, True, (255, 255, 255))
+            restart_rect = restart_surface.get_rect(center=(WIDTH//2, HEIGHT//2 + 50))
+            surface.blit(restart_surface, restart_rect)
 
     def show_pieces(self, surface):
         for row in range(ROWS):
             for col in range(COLS):
-                # piece ?
                 if self.board.squares[row][col].has_piece():
                     piece = self.board.squares[row][col].piece
                     
-                    # all pieces except dragger piece
                     if piece is not self.dragger.piece:
                         piece.set_texture(size=80)
                         img = pygame.image.load(piece.texture)
@@ -128,13 +175,11 @@ class Game:
                         piece.texture_rect = img.get_rect(center=img_center)
                         surface.blit(img, piece.texture_rect)
 
-    
     def set_hover(self, row, col):
         if 0 <= row < ROWS and 0 <= col < COLS:
             self.hovered_sqr = self.board.squares[row][col]
         else:
             self.hovered_sqr = None
-    
     
     def show_moves(self, surface):
         theme = self.config.theme
@@ -142,13 +187,9 @@ class Game:
         if self.dragger.dragging:
             piece = self.dragger.piece
 
-            # loop all valid moves
             for move in piece.moves:
-                # color
                 color = theme.moves.light if (move.final.row + move.final.col) % 2 == 0 else theme.moves.dark
-                # rect
                 rect = (move.final.col * SQSIZE, move.final.row * SQSIZE, SQSIZE, SQSIZE)
-                # blit
                 pygame.draw.rect(surface, color, rect)
 
     def show_last_move(self, surface):
@@ -159,29 +200,37 @@ class Game:
             final = self.board.last_move.final
 
             for pos in [initial, final]:
-                # color
                 color = theme.trace.light if (pos.row + pos.col) % 2 == 0 else theme.trace.dark
-                # rect
                 rect = (pos.col * SQSIZE, pos.row * SQSIZE, SQSIZE, SQSIZE)
-                # blit
                 pygame.draw.rect(surface, color, rect)
 
     def show_hover(self, surface):
         if self.hovered_sqr:
-            # color
             color = (180, 180, 180)
-            # rect
             rect = (self.hovered_sqr.col * SQSIZE, self.hovered_sqr.row * SQSIZE, SQSIZE, SQSIZE)
-            # blit
             pygame.draw.rect(surface, color, rect, width=3)
+            
+    def show_check(self, surface):
+        if self.check_alert:
+            king_pos = None
+            for row in range(ROWS):
+                for col in range(COLS):
+                    piece = self.board.squares[row][col].piece
+                    if isinstance(piece, King) and piece.color == self.check_alert:
+                        king_pos = (row, col)
+                        break
+                if king_pos:
+                    break
+                    
+            if king_pos:
+                row, col = king_pos
+                rect = (col * SQSIZE, row * SQSIZE, SQSIZE, SQSIZE)
+                pygame.draw.rect(surface, (255, 0, 0), rect, 5)
 
     # other methods
-
     def next_turn(self):
         self.next_player = 'white' if self.next_player == 'black' else 'black'
-
-    def set_hover(self, row, col):
-        self.hovered_sqr = self.board.squares[row][col]
+        self.check_alert = None
 
     def change_theme(self):
         self.config.change_theme()
@@ -201,7 +250,6 @@ class Game:
             self.engine_white = not self.engine_white
         elif color == 'black':
             self.engine_black = not self.engine_black
-        # Update game mode based on engine states
         if not self.engine_white and not self.engine_black:
             self.game_mode = 0
         elif self.engine_white and self.engine_black:
@@ -218,52 +266,33 @@ class Game:
         self.engine.set_skill_level(level)
 
     def get_engine_evaluation(self):
-        # Set the current position to the engine
         fen = self.board.to_fen(self.next_player)
         self.engine.set_position(fen)
-        
-        # Get the evaluation
         self.evaluation = self.engine.get_evaluation()
         return self.evaluation
 
     def make_engine_move(self):
-        # Convert board to FEN with next player
-        fen = self.board.to_fen(self.next_player)
-        self.engine.set_position(fen)
-        
-        # Skip if game is over
-        if self.engine.is_game_over():
-            return
-        
-        # Get best move from engine
-        uci_move = self.engine.get_best_move()
-        
-        # Handle case where engine returns no move
-        if uci_move is None or len(uci_move) < 4:
-            return
-        
-        # Convert UCI to our move format
-        col_map = {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7}
-        try:
-            from_col = col_map[uci_move[0]]
-            from_row = 8 - int(uci_move[1])
-            to_col = col_map[uci_move[2]]
-            to_row = 8 - int(uci_move[3])
-        except (KeyError, ValueError):
-            return
-        
-        # Create move object
-        initial = Square(from_row, from_col)
-        final = Square(to_row, to_col)
-        move = Move(initial, final)
-        
-        # Execute move
-        piece = self.board.squares[from_row][from_col].piece
-        captured = self.board.squares[to_row][to_col].has_piece()
-        self.board.move(piece, move)
-        self.board.set_true_en_passant(piece)
-        self.play_sound(captured)
-        self.next_turn()
+        if self.pending_engine_move:
+            move = self.pending_engine_move
+            piece = self.board.squares[move.initial.row][move.initial.col].piece
+            captured = self.board.squares[move.final.row][move.final.col].has_piece()
+            
+            self.board.move(piece, move)
+            self.board.set_true_en_passant(piece)
+            self.play_sound(captured)
+            self.next_turn()
+            self.check_game_state()
+            
+            self.pending_engine_move = None
+            self.engine_thread = None
+            return True
+        return False
+
+    def schedule_engine_move(self):
+        if not self.engine_thread and not self.pending_engine_move:
+            fen = self.board.to_fen(self.next_player)
+            self.engine_thread = EngineWorker(self, fen)
+            self.engine_thread.start()
 
     def increase_level(self):
         self.level = min(20, self.level + 1)
@@ -272,4 +301,26 @@ class Game:
     def decrease_level(self):
         self.level = max(0, self.level - 1)
         self.engine.set_skill_level(self.level)
-# [file content end]
+        
+    def check_game_state(self):
+        if self.game_over:
+            return
+            
+        if self.board.is_king_in_check(self.next_player):
+            self.check_alert = self.next_player
+            if self.config.check_sound:
+                self.config.check_sound.play()
+            
+        if self.board.is_checkmate(self.next_player):
+            self.game_over = True
+            self.winner = 'black' if self.next_player == 'white' else 'white'
+            return
+            
+        if self.board.is_stalemate(self.next_player):
+            self.game_over = True
+            self.winner = None
+            return
+            
+        if self.board.is_threefold_repetition():
+            self.game_over = True
+            self.winner = None

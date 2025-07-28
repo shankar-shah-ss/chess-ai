@@ -1,5 +1,3 @@
-# [file name]: main.py
-# [file content begin]
 import pygame
 import sys
 
@@ -9,12 +7,12 @@ from square import Square
 from move import Move
 
 class Main:
-
     def __init__(self):
         pygame.init()
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption('Chess')
         self.game = Game()
+        self.clock = pygame.time.Clock()  # For FPS control
 
     def mainloop(self):
         screen = self.screen
@@ -26,32 +24,74 @@ class Main:
         game.set_game_mode(0)  # Start with human vs human
 
         while True:
+            self.clock.tick(60)  # Limit to 60 FPS for consistent performance
             
+            # Check for completed engine moves
+            if game.engine_thread and not game.engine_thread.is_alive():
+                if game.engine_thread.move:
+                    game.pending_engine_move = game.engine_thread.move
+                game.engine_thread = None
+
+            # Process engine move if available
+            if game.pending_engine_move:
+                game.make_engine_move()
+                # Force immediate redraw
+                game.show_bg(screen)
+                game.show_last_move(screen)
+                game.show_pieces(screen)
+                pygame.display.update()
+
+            # Skip processing if game over
+            if game.game_over:
+                game.show_bg(screen)
+                game.show_last_move(screen)
+                game.show_moves(screen)
+                game.show_check(screen)
+                game.show_pieces(screen)
+                game.show_hover(screen)
+                
+                if dragger.dragging:
+                    dragger.update_blit(screen)
+                    
+                pygame.display.update()
+                
+                # Process events for restart
+                for event in pygame.event.get():
+                    if event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_r:
+                            game.reset()
+                            game = self.game
+                            board = self.game.board
+                            dragger = self.game.dragger
+                    elif event.type == pygame.QUIT:
+                        pygame.quit()
+                        sys.exit()
+                continue
+
+            # Schedule engine move if needed
+            if not dragger.dragging and not game.engine_thread and not game.pending_engine_move:
+                if (game.next_player == 'white' and game.engine_white) or \
+                   (game.next_player == 'black' and game.engine_black):
+                    game.schedule_engine_move()
+
+            # Render game state
             game.show_bg(screen)
             game.show_last_move(screen)
-            game.show_pieces(screen)
             game.show_moves(screen)
-            
+            game.show_check(screen)
+            game.show_pieces(screen)
             game.show_hover(screen)
 
             if dragger.dragging:
                 dragger.update_blit(screen)
 
-            # Engine move logic
-            if not dragger.dragging:
-                if (game.next_player == 'white' and game.engine_white) or \
-                   (game.next_player == 'black' and game.engine_black):
-                    game.make_engine_move()
-
             for event in pygame.event.get():
                 # Mouse click
                 if event.type == pygame.MOUSEBUTTONDOWN:
-                    # Skip human moves if engine is playing
                     if (game.next_player == 'white' and game.engine_white) or \
                        (game.next_player == 'black' and game.engine_black):
                         continue
                     
-                    # Only process if mouse is within board boundaries
                     if 0 <= event.pos[0] < WIDTH and 0 <= event.pos[1] < HEIGHT:
                         dragger.update_mouse(event.pos)
                         clicked_row = event.pos[1] // SQSIZE
@@ -70,7 +110,6 @@ class Main:
                 
                 # Mouse motion
                 elif event.type == pygame.MOUSEMOTION:
-                    # Only process if mouse is within board boundaries
                     if 0 <= event.pos[0] < WIDTH and 0 <= event.pos[1] < HEIGHT:
                         motion_row = event.pos[1] // SQSIZE
                         motion_col = event.pos[0] // SQSIZE
@@ -85,12 +124,10 @@ class Main:
                             game.show_hover(screen)
                             dragger.update_blit(screen)
                     else:
-                        # Clear hover when mouse leaves board
                         game.hovered_sqr = None
                 
                 # Mouse release
                 elif event.type == pygame.MOUSEBUTTONUP:
-                    # Skip human moves if engine is playing
                     if (game.next_player == 'white' and game.engine_white) or \
                        (game.next_player == 'black' and game.engine_black):
                         continue
@@ -98,7 +135,6 @@ class Main:
                     if dragger.dragging:
                         dragger.update_mouse(event.pos)
                         
-                        # Only process if mouse is within board boundaries
                         if 0 <= event.pos[0] < WIDTH and 0 <= event.pos[1] < HEIGHT:
                             released_row = event.pos[1] // SQSIZE
                             released_col = event.pos[0] // SQSIZE
@@ -116,58 +152,48 @@ class Main:
                                 game.show_last_move(screen)
                                 game.show_moves(screen)
                                 game.show_pieces(screen)
-                                # Force immediate screen update after human move
                                 pygame.display.update()
                                 game.next_turn()
+                                game.check_game_state()
                     
                     dragger.undrag_piece()
                 
                 # Key press
                 elif event.type == pygame.KEYDOWN:
-                    # Change theme
                     if event.key == pygame.K_t:
                         game.change_theme()
-                    
-                    # Reset game
                     if event.key == pygame.K_r:
                         game.reset()
                         game = self.game
                         board = self.game.board
                         dragger = self.game.dragger
-                    
-                    # Game mode switching
-                    if event.key == pygame.K_1:  # Human vs Human
+                    if event.key == pygame.K_1:
                         game.set_game_mode(0)
-                    if event.key == pygame.K_2:  # Human vs Engine
+                    if event.key == pygame.K_2:
                         game.set_game_mode(1)
-                    if event.key == pygame.K_3:  # Engine vs Engine
+                    if event.key == pygame.K_3:
                         game.set_game_mode(2)
-                    
-                    # Engine controls
-                    if event.key == pygame.K_e:  # Toggle white engine
+                    if event.key == pygame.K_e:
                         game.toggle_engine('white')
-                    if event.key == pygame.K_d:  # Toggle black engine
+                    if event.key == pygame.K_d:
                         game.toggle_engine('black')
-                    if event.key == pygame.K_UP:  # Increase depth
+                    if event.key == pygame.K_UP:
                         game.set_engine_depth(min(20, game.depth + 1))
-                    if event.key == pygame.K_DOWN:  # Decrease depth
+                    if event.key == pygame.K_DOWN:
                         game.set_engine_depth(max(1, game.depth - 1))
-                    if event.key == pygame.K_RIGHT:  # Increase level
+                    if event.key == pygame.K_RIGHT:
                         game.set_engine_level(min(20, game.level + 1))
-                    if event.key == pygame.K_LEFT:  # Decrease level
+                    if event.key == pygame.K_LEFT:
                         game.set_engine_level(max(0, game.level - 1))
-                    if event.key == pygame.K_s:  # Show evaluation
+                    if event.key == pygame.K_s:
                         game.get_engine_evaluation()
-                    if event.key == pygame.K_a:  # Engine vs Engine
+                    if event.key == pygame.K_a:
                         game.set_game_mode(2)
-
-                    # Level adjustment
-                    if event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:  # + key
+                    if event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
                         game.increase_level()
-                    if event.key == pygame.K_MINUS:  # - key
+                    if event.key == pygame.K_MINUS:
                         game.decrease_level()
                 
-                # Quit application
                 elif event.type == pygame.QUIT:
                     pygame.quit()
                     sys.exit()
@@ -176,4 +202,3 @@ class Main:
 
 main = Main()
 main.mainloop()
-# [file content end]

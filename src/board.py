@@ -15,9 +15,11 @@ class Board:
         self.last_move = None
         self.en_passant_target = None
         self.castling_rights = {'K': True, 'Q': True, 'k': True, 'q': True}
+        self.position_signatures = {}  # Track position signatures for repetition
         self._create()
         self._add_pieces('white')
         self._add_pieces('black')
+        self.record_position('white')  # Record initial position
 
     def move(self, piece, move, testing=False):
         initial = move.initial
@@ -105,6 +107,50 @@ class Board:
 
         # set last move
         self.last_move = move
+        
+        # Record position for next player
+        next_player = 'black' if piece.color == 'white' else 'white'
+        self.record_position(next_player)
+
+    def record_position(self, next_player):
+        """Record the current position signature"""
+        signature = self.get_position_signature(next_player)
+        self.position_signatures[signature] = self.position_signatures.get(signature, 0) + 1
+
+    def get_position_signature(self, next_player):
+        """Create a unique signature for the current position"""
+        # Signature includes: board state + castling rights + en passant + next player
+        signature = ""
+        
+        # Board state
+        for row in range(ROWS):
+            for col in range(COLS):
+                if self.squares[row][col].isempty():
+                    signature += "."
+                else:
+                    piece = self.squares[row][col].piece
+                    symbol = piece.symbol()
+                    signature += symbol.upper() if piece.color == 'white' else symbol.lower()
+        
+        # Castling rights
+        signature += self.castling_rights['K'] and "K" or ""
+        signature += self.castling_rights['Q'] and "Q" or ""
+        signature += self.castling_rights['k'] and "k" or ""
+        signature += self.castling_rights['q'] and "q" or ""
+        signature += "-" if not any(self.castling_rights.values()) else ""
+        
+        # En passant
+        if self.en_passant_target:
+            col_char = chr(97 + self.en_passant_target.col)
+            row_num = 8 - self.en_passant_target.row
+            signature += f"{col_char}{row_num}"
+        else:
+            signature += "-"
+        
+        # Next player
+        signature += next_player[0]  # 'w' or 'b'
+        
+        return signature
 
     def valid_move(self, piece, move):
         return move in piece.moves
@@ -141,6 +187,78 @@ class Board:
                         if isinstance(m.final.piece, King):
                             return True
         
+        return False
+                        
+    def is_king_in_check(self, color):
+        # Find the king
+        king_pos = None
+        for row in range(ROWS):
+            for col in range(COLS):
+                piece = self.squares[row][col].piece
+                if isinstance(piece, King) and piece.color == color:
+                    king_pos = (row, col)
+                    break
+            if king_pos:
+                break
+                
+        if not king_pos:
+            return False
+            
+        # Check if any enemy piece can attack the king
+        enemy_color = 'black' if color == 'white' else 'white'
+        for row in range(ROWS):
+            for col in range(COLS):
+                piece = self.squares[row][col].piece
+                if piece and piece.color == enemy_color:
+                    self.calc_moves(piece, row, col, bool=False)
+                    for move in piece.moves:
+                        if move.final.row == king_pos[0] and move.final.col == king_pos[1]:
+                            piece.clear_moves()
+                            return True
+                    piece.clear_moves()
+                    
+        return False
+        
+    def is_checkmate(self, color):
+        # King must be in check
+        if not self.is_king_in_check(color):
+            return False
+            
+        # Check if any move can get out of check
+        for row in range(ROWS):
+            for col in range(COLS):
+                piece = self.squares[row][col].piece
+                if piece and piece.color == color:
+                    self.calc_moves(piece, row, col, bool=True)
+                    for move in piece.moves:
+                        # Test if this move gets out of check
+                        temp_board = copy.deepcopy(self)
+                        temp_piece = temp_board.squares[row][col].piece
+                        temp_board.move(temp_piece, move, testing=True)
+                        if not temp_board.is_king_in_check(color):
+                            return False
+        return True
+        
+    def is_stalemate(self, color):
+        # King not in check
+        if self.is_king_in_check(color):
+            return False
+            
+        # Check if any legal move exists
+        for row in range(ROWS):
+            for col in range(COLS):
+                piece = self.squares[row][col].piece
+                if piece and piece.color == color:
+                    self.calc_moves(piece, row, col, bool=True)
+                    if piece.moves:
+                        return False
+        return True
+        
+    def is_threefold_repetition(self):
+        # Check if any position has occurred 3 times
+        for count in self.position_signatures.values():
+            if count >= 3:
+                return True
         return False
 
     def calc_moves(self, piece, row, col, bool=True):
