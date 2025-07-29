@@ -1,5 +1,4 @@
-# [file name]: main.py
-# [file content begin]
+# main.py - Updated with Enhanced Analysis System
 import pygame
 import sys
 
@@ -7,26 +6,37 @@ from const import *
 from game import Game
 from square import Square
 from move import Move
+from analysis_manager import AnalysisManager
 
 class Main:
     def __init__(self):
         pygame.init()
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption('Chess')
+        pygame.display.set_caption('Chess with Enhanced Analysis')
         self.game = Game()
-        self.clock = pygame.time.Clock()  # For FPS control
+        self.clock = pygame.time.Clock()
+        
+        # Initialize enhanced analysis manager
+        self.analysis_manager = AnalysisManager(self.game.config, self.game.engine)
+        
+        # Connect analysis manager to game
+        self.game.set_analysis_manager(self.analysis_manager)
 
     def mainloop(self):
         screen = self.screen
         game = self.game
         board = self.game.board
         dragger = self.game.dragger
+        analysis_manager = self.analysis_manager
 
         # Set initial game mode
         game.set_game_mode(0)  # Start with human vs human
 
         while True:
-            self.clock.tick(60)  # Limit to 60 FPS for consistent performance
+            self.clock.tick(60)  # Limit to 60 FPS
+            
+            # Update analysis manager
+            analysis_manager.update()
             
             # Check for completed engine moves
             if game.engine_thread and not game.engine_thread.is_alive():
@@ -40,8 +50,8 @@ class Main:
                     game.evaluation = game.evaluation_thread.evaluation
                 game.evaluation_thread = None
 
-            # Process engine move if available
-            if game.pending_engine_move:
+            # Process engine move if available and not in analysis mode
+            if game.pending_engine_move and not analysis_manager.active:
                 game.make_engine_move()
                 # Force immediate redraw
                 game.show_bg(screen)
@@ -49,11 +59,38 @@ class Main:
                 game.show_pieces(screen)
                 pygame.display.update()
 
-            # Schedule evaluation if needed
-            if not game.evaluation_thread:
+            # Schedule evaluation if needed (not in analysis mode)
+            if not game.evaluation_thread and not analysis_manager.active:
                 game.schedule_evaluation()
 
-            # Skip processing if game over
+            # Handle analysis mode rendering
+            if analysis_manager.active:
+                # Render analysis screen
+                if analysis_manager.render(screen):
+                    pygame.display.update()
+                    
+                    # Process events for analysis mode
+                    for event in pygame.event.get():
+                        # Handle analysis manager input first
+                        if analysis_manager.handle_input(event):
+                            continue
+                            
+                        # Handle global keys
+                        if event.type == pygame.KEYDOWN:
+                            if event.key == pygame.K_r:
+                                game.reset()
+                                analysis_manager.reset()
+                                game = self.game
+                                board = self.game.board
+                                dragger = self.game.dragger
+                                analysis_manager = self.analysis_manager
+                                game.set_analysis_manager(analysis_manager)
+                        elif event.type == pygame.QUIT:
+                            pygame.quit()
+                            sys.exit()
+                    continue
+
+            # Skip processing if game over (but not in analysis mode)
             if game.game_over:
                 game.show_bg(screen)
                 game.show_last_move(screen)
@@ -72,9 +109,14 @@ class Main:
                     if event.type == pygame.KEYDOWN:
                         if event.key == pygame.K_r:
                             game.reset()
+                            analysis_manager.reset()
                             game = self.game
                             board = self.game.board
                             dragger = self.game.dragger
+                            analysis_manager = self.analysis_manager
+                            game.set_analysis_manager(analysis_manager)
+                        elif event.key == pygame.K_a:
+                            analysis_manager.enter_analysis_mode()
                     elif event.type == pygame.QUIT:
                         pygame.quit()
                         sys.exit()
@@ -156,16 +198,13 @@ class Main:
                             move = Move(initial, final)
 
                             if board.valid_move(dragger.piece, move):
-                                captured = board.squares[released_row][released_col].has_piece()
-                                board.move(dragger.piece, move)
-                                game.play_sound(captured)
+                                # Record move for analysis and make the move
+                                game.make_move(dragger.piece, move)
                                 game.show_bg(screen)
                                 game.show_last_move(screen)
                                 game.show_moves(screen)
                                 game.show_pieces(screen)
                                 pygame.display.update()
-                                game.next_turn()
-                                game.check_game_state()
                     
                     dragger.undrag_piece()
                 
@@ -173,33 +212,39 @@ class Main:
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_t:
                         game.change_theme()
-                    if event.key == pygame.K_r:
+                    elif event.key == pygame.K_r:
                         game.reset()
+                        analysis_manager.reset()
                         game = self.game
                         board = self.game.board
                         dragger = self.game.dragger
-                    if event.key == pygame.K_1:
+                        analysis_manager = self.analysis_manager
+                        game.set_analysis_manager(analysis_manager)
+                    elif event.key == pygame.K_1:
                         game.set_game_mode(0)
-                    if event.key == pygame.K_2:
+                    elif event.key == pygame.K_2:
                         game.set_game_mode(1)
-                    if event.key == pygame.K_3:
+                    elif event.key == pygame.K_3:
                         game.set_game_mode(2)
-                    if event.key == pygame.K_e:
+                    elif event.key == pygame.K_e:
                         game.toggle_engine('white')
-                    if event.key == pygame.K_d:
+                    elif event.key == pygame.K_d:
                         game.toggle_engine('black')
-                    if event.key == pygame.K_UP:
+                    elif event.key == pygame.K_UP:
                         game.set_engine_depth(min(20, game.depth + 1))
-                    if event.key == pygame.K_DOWN:
+                    elif event.key == pygame.K_DOWN:
                         game.set_engine_depth(max(1, game.depth - 1))
-                    if event.key == pygame.K_RIGHT:
+                    elif event.key == pygame.K_RIGHT:
                         game.set_engine_level(min(20, game.level + 1))
-                    if event.key == pygame.K_LEFT:
+                    elif event.key == pygame.K_LEFT:
                         game.set_engine_level(max(0, game.level - 1))
-                    if event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
+                    elif event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
                         game.increase_level()
-                    if event.key == pygame.K_MINUS:
+                    elif event.key == pygame.K_MINUS:
                         game.decrease_level()
+                    elif event.key == pygame.K_a:
+                        if game.game_over:
+                            analysis_manager.enter_analysis_mode()
                 
                 elif event.type == pygame.QUIT:
                     pygame.quit()
@@ -209,4 +254,3 @@ class Main:
 
 main = Main()
 main.mainloop()
-# [file content end]

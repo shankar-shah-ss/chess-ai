@@ -1,5 +1,4 @@
-# [file name]: game.py
-# [file content begin]
+# game.py - Updated with Enhanced Analysis Integration
 import pygame
 import time
 from threading import Thread, Lock
@@ -73,6 +72,9 @@ class Game:
         self.winner = None
         self.check_alert = None
         
+        # Analysis manager (will be set by main)
+        self.analysis_manager = None
+        
         # Threading
         self.engine_thread = None
         self.evaluation_thread = None
@@ -91,6 +93,10 @@ class Game:
         elif mode == 2:  # Engine vs Engine
             self.engine_white = True
             self.engine_black = True
+
+    def set_analysis_manager(self, analysis_manager):
+        """Set the analysis manager"""
+        self.analysis_manager = analysis_manager
 
     # blit methods
     def show_bg(self, surface):
@@ -122,49 +128,48 @@ class Game:
                     # blit
                     surface.blit(lbl, lbl_pos)
         
-        # Display game mode
-        mode_text = {
-            0: "Human vs Human",
-            1: "Human vs Engine",
-            2: "Engine vs Engine"
-        }[self.game_mode]
-        
-        mode_surface = self.config.font.render(mode_text, True, (255, 255, 255))
-        surface.blit(mode_surface, (WIDTH - 250, 10))
-        
-        # Display controls info
-        controls = "1: HvH, 2: HvE, 3: EvE"
-        ctrl_surface = self.config.font.render(controls, True, (255, 255, 255))
-        surface.blit(ctrl_surface, (WIDTH - 250, 40))
-        
-        # Display engine info
-        engine_info = f"Level: {self.level}, Depth: {self.depth}"
-        info_surface = self.config.font.render(engine_info, True, (255, 255, 255))
-        surface.blit(info_surface, (WIDTH - 250, 70))
-        
-        # Display evaluation if available
-        with self.evaluation_lock:
-            if self.evaluation and 'type' in self.evaluation and 'value' in self.evaluation:
-                eval_type = self.evaluation['type']
-                value = self.evaluation['value']
-                
-                if eval_type == 'cp':
-                    score = value / 100.0
-                    eval_text = f"Eval: {score:+.2f}"
-                else:  # mate
-                    moves_to_mate = abs(value)
-                    eval_text = f"Mate in {moves_to_mate} for {'white' if value > 0 else 'black'}"
-                
-                eval_surface = self.config.font.render(eval_text, True, (255, 255, 255))
-                surface.blit(eval_surface, (WIDTH - 250, 100))
+        # Display game mode and info only if not in analysis mode
+        if not (self.analysis_manager and self.analysis_manager.active):
+            display_width = WIDTH
+            
+            # Display game mode
+            mode_text = {
+                0: "Human vs Human",
+                1: "Human vs Engine",
+                2: "Engine vs Engine"
+            }[self.game_mode]
+            
+            mode_surface = self.config.font.render(mode_text, True, (255, 255, 255))
+            surface.blit(mode_surface, (display_width - 250, 10))
+            
+            # Display controls info
+            controls = "1: HvH, 2: HvE, 3: EvE, A: Analysis"
+            ctrl_surface = self.config.font.render(controls, True, (255, 255, 255))
+            surface.blit(ctrl_surface, (display_width - 300, 40))
+            
+            # Display engine info
+            engine_info = f"Level: {self.level}, Depth: {self.depth}"
+            info_surface = self.config.font.render(engine_info, True, (255, 255, 255))
+            surface.blit(info_surface, (display_width - 250, 70))
+            
+            # Display evaluation if available
+            with self.evaluation_lock:
+                if self.evaluation and 'type' in self.evaluation and 'value' in self.evaluation:
+                    eval_type = self.evaluation['type']
+                    value = self.evaluation['value']
+                    
+                    if eval_type == 'cp':
+                        score = value / 100.0
+                        eval_text = f"Eval: {score:+.2f}"
+                    else:  # mate
+                        moves_to_mate = abs(value)
+                        eval_text = f"Mate in {moves_to_mate} for {'white' if value > 0 else 'black'}"
+                    
+                    eval_surface = self.config.font.render(eval_text, True, (255, 255, 255))
+                    surface.blit(eval_surface, (display_width - 250, 100))
 
-        # Display level info
-        level_info = f"Level: {self.level}"
-        level_surface = self.config.font.render(level_info, True, (255, 255, 255))
-        surface.blit(level_surface, (WIDTH - 150, 40))
-        
         # Display game over message
-        if self.game_over:
+        if self.game_over and not (self.analysis_manager and self.analysis_manager.active):
             font = pygame.font.SysFont('monospace', 40, bold=True)
             if self.winner:
                 text = f"{self.winner.capitalize()} wins!"
@@ -175,7 +180,7 @@ class Game:
             surface.blit(text_surface, text_rect)
             
             restart_font = pygame.font.SysFont('monospace', 24)
-            restart_text = "Press 'R' to restart"
+            restart_text = "Press 'R' to restart, 'A' for analysis"
             restart_surface = restart_font.render(restart_text, True, (255, 255, 255))
             restart_rect = restart_surface.get_rect(center=(WIDTH//2, HEIGHT//2 + 50))
             surface.blit(restart_surface, restart_rect)
@@ -295,6 +300,11 @@ class Game:
             piece = self.board.squares[move.initial.row][move.initial.col].piece
             captured = self.board.squares[move.final.row][move.final.col].has_piece()
             
+            # Record move for analysis before making it
+            if self.analysis_manager:
+                position = self.board.to_fen(piece.color)
+                self.analysis_manager.record_move(move, piece.color, position)
+            
             self.board.move(piece, move)
             self.play_sound(captured)
             self.next_turn()
@@ -341,4 +351,17 @@ class Game:
         if self.board.is_threefold_repetition():
             self.game_over = True
             self.winner = None
-# [file content end]
+            
+    def make_move(self, piece, move):
+        """Make a move and record it for analysis"""
+        # Record move for analysis before making it
+        if self.analysis_manager:
+            position = self.board.to_fen(piece.color)
+            self.analysis_manager.record_move(move, piece.color, position)
+        
+        # Make the actual move
+        captured = self.board.squares[move.final.row][move.final.col].has_piece()
+        self.board.move(piece, move)
+        self.play_sound(captured)
+        self.next_turn()
+        self.check_game_state()
