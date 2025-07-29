@@ -25,45 +25,46 @@ class Board:
         initial = move.initial
         final = move.final
 
-        en_passant_empty = self.squares[final.row][final.col].isempty()
+        # Check if this is an en passant capture
+        is_en_passant = (isinstance(piece, Pawn) and 
+                        abs(initial.col - final.col) == 1 and 
+                        self.squares[final.row][final.col].isempty() and
+                        self.en_passant_target and
+                        final.row == self.en_passant_target.row and 
+                        final.col == self.en_passant_target.col)
         
-        # Reset en passant target if not a double pawn push
-        if not (isinstance(piece, Pawn) and abs(initial.row - final.row) == 2):
-            self.en_passant_target = None
+        # Clear the en passant target from previous move
+        old_en_passant = self.en_passant_target
+        self.en_passant_target = None
 
-        # console board move update
+        # Move the piece
         self.squares[initial.row][initial.col].piece = None
         self.squares[final.row][final.col].piece = piece
 
+        # Handle pawn-specific moves
         if isinstance(piece, Pawn):
-            # Check for en passant opportunity
+            # Check for double pawn push (sets new en passant target)
             if abs(initial.row - final.row) == 2:
-                # Set en passant target
                 self.en_passant_target = Square(
                     (initial.row + final.row) // 2,
                     initial.col
                 )
-            else:
-                self.en_passant_target = None
             
-            # en passant capture
-            diff = final.col - initial.col
-            if diff != 0 and en_passant_empty and self.en_passant_target and \
-               final.row == self.en_passant_target.row and final.col == self.en_passant_target.col:
-                # Capture the pawn
-                captured_pawn_row = initial.row
-                captured_pawn_col = final.col
+            # Handle en passant capture
+            if is_en_passant:
+                # Remove the captured pawn
+                captured_pawn_row = initial.row  # Same row as attacking pawn
+                captured_pawn_col = final.col    # Same column as target square
                 self.squares[captured_pawn_row][captured_pawn_col].piece = None
                 if not testing:
-                    sound = Sound(
-                        os.path.join('assets/sounds/capture.wav'))
+                    sound = Sound(os.path.join('assets/sounds/capture.wav'))
                     sound.play()
             
-            # pawn promotion (for any move reaching last rank)
+            # Handle pawn promotion
             if final.row == 0 or final.row == 7:
                 self.check_promotion(piece, final)
 
-        # king castling - improved logic
+        # Handle king castling
         if isinstance(piece, King):
             # Update castling rights
             if piece.color == 'white':
@@ -73,6 +74,7 @@ class Board:
                 self.castling_rights['k'] = False
                 self.castling_rights['q'] = False
             
+            # Handle castling move
             if self.castling(initial, final) and not testing:
                 diff = final.col - initial.col
                 rook_col = 0 if diff < 0 else 7
@@ -86,7 +88,7 @@ class Board:
                 self.squares[initial.row][new_rook_col].piece = rook
                 rook.moved = True
 
-        # Rook move - update castling rights
+        # Handle rook moves - update castling rights
         if isinstance(piece, Rook):
             if initial.col == 0:  # Queenside rook
                 if piece.color == 'white':
@@ -99,13 +101,13 @@ class Board:
                 else:
                     self.castling_rights['k'] = False
 
-        # move
+        # Mark piece as moved
         piece.moved = True
 
-        # clear valid moves
+        # Clear valid moves
         piece.clear_moves()
 
-        # set last move
+        # Set last move
         self.last_move = move
         
         # Record position for next player
@@ -163,15 +165,9 @@ class Board:
         return abs(initial.col - final.col) == 2
 
     def set_true_en_passant(self, piece):
-        if not isinstance(piece, Pawn):
-            return
-
-        for row in range(ROWS):
-            for col in range(COLS):
-                if isinstance(self.squares[row][col].piece, Pawn):
-                    self.squares[row][col].piece.en_passant = False
-        
-        piece.en_passant = True
+        # This method is no longer needed since we handle en passant with target squares
+        # Keeping it for compatibility but it does nothing
+        pass
 
     def in_check(self, piece, move):
         temp_piece = copy.deepcopy(piece)
@@ -280,6 +276,7 @@ class Board:
                     else: break
                 else: break
 
+            # Regular diagonal captures
             possible_move_row = row + piece.dir
             possible_move_cols = [col-1, col+1]
             for possible_move_col in possible_move_cols:
@@ -295,35 +292,27 @@ class Board:
                         else:
                             piece.add_move(move)
 
-            # En passant
-            r = 3 if piece.color == 'white' else 4
-            fr = 2 if piece.color == 'white' else 5
-            # Left capture
-            if Square.in_range(col-1) and row == r:
-                if self.squares[row][col-1].has_enemy_piece(piece.color):
-                    p = self.squares[row][col-1].piece
-                    if isinstance(p, Pawn) and p.en_passant:
-                        initial = Square(row, col)
-                        final = Square(fr, col-1)
-                        move = Move(initial, final)
-                        if bool:
-                            if not self.in_check(piece, move):
+            # En passant captures
+            if self.en_passant_target:
+                # Check if pawn is on the correct rank for en passant
+                en_passant_rank = 3 if piece.color == 'white' else 4
+                if row == en_passant_rank:
+                    # Check if pawn is adjacent to the en passant target column
+                    if abs(col - self.en_passant_target.col) == 1:
+                        # Check if there's an enemy pawn to capture
+                        enemy_pawn_row = self.en_passant_target.row + (1 if piece.color == 'white' else -1)
+                        if (Square.in_range(enemy_pawn_row, self.en_passant_target.col) and
+                            self.squares[enemy_pawn_row][self.en_passant_target.col].has_enemy_piece(piece.color) and
+                            isinstance(self.squares[enemy_pawn_row][self.en_passant_target.col].piece, Pawn)):
+                            
+                            initial = Square(row, col)
+                            final = Square(self.en_passant_target.row, self.en_passant_target.col)
+                            move = Move(initial, final)
+                            if bool:
+                                if not self.in_check(piece, move):
+                                    piece.add_move(move)
+                            else:
                                 piece.add_move(move)
-                        else:
-                            piece.add_move(move)
-            # Right capture
-            if Square.in_range(col+1) and row == r:
-                if self.squares[row][col+1].has_enemy_piece(piece.color):
-                    p = self.squares[row][col+1].piece
-                    if isinstance(p, Pawn) and p.en_passant:
-                        initial = Square(row, col)
-                        final = Square(fr, col+1)
-                        move = Move(initial, final)
-                        if bool:
-                            if not self.in_check(piece, move):
-                                piece.add_move(move)
-                        else:
-                            piece.add_move(move)
 
         def knight_moves():
             possible_moves = [

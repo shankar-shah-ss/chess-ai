@@ -33,6 +33,12 @@ class Main:
                 if game.engine_thread.move:
                     game.pending_engine_move = game.engine_thread.move
                 game.engine_thread = None
+                
+            # Check for completed evaluations
+            if game.evaluation_thread and not game.evaluation_thread.is_alive():
+                with game.evaluation_lock:
+                    game.evaluation = game.evaluation_thread.evaluation
+                game.evaluation_thread = None
 
             # Process engine move if available
             if game.pending_engine_move:
@@ -42,6 +48,10 @@ class Main:
                 game.show_last_move(screen)
                 game.show_pieces(screen)
                 pygame.display.update()
+
+            # Schedule evaluation if needed
+            if not game.evaluation_thread:
+                game.schedule_evaluation()
 
             # Skip processing if game over
             if game.game_over:
@@ -148,7 +158,6 @@ class Main:
                             if board.valid_move(dragger.piece, move):
                                 captured = board.squares[released_row][released_col].has_piece()
                                 board.move(dragger.piece, move)
-                                board.set_true_en_passant(dragger.piece)
                                 game.play_sound(captured)
                                 game.show_bg(screen)
                                 game.show_last_move(screen)
@@ -187,10 +196,6 @@ class Main:
                         game.set_engine_level(min(20, game.level + 1))
                     if event.key == pygame.K_LEFT:
                         game.set_engine_level(max(0, game.level - 1))
-                    if event.key == pygame.K_s:
-                        game.get_engine_evaluation()
-                    if event.key == pygame.K_a:
-                        game.set_game_mode(2)
                     if event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
                         game.increase_level()
                     if event.key == pygame.K_MINUS:

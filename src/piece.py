@@ -41,7 +41,7 @@ class Pawn(Piece):
 
     def __init__(self, color):
         self.dir = -1 if color == 'white' else 1  # White moves up, black moves down
-        self.en_passant = False
+        # Removed en_passant flag - we now use board's en_passant_target
         super().__init__('pawn', color, 1.0)
 
 class Knight(Piece):

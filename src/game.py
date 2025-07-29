@@ -2,7 +2,7 @@
 # [file content begin]
 import pygame
 import time
-from threading import Thread
+from threading import Thread, Lock
 from const import *
 from board import Board
 from dragger import Dragger
@@ -38,6 +38,18 @@ class EngineWorker(Thread):
             except (KeyError, ValueError):
                 pass
 
+class EvaluationWorker(Thread):
+    def __init__(self, game, fen):
+        super().__init__()
+        self.game = game
+        self.fen = fen
+        self.evaluation = None
+
+    def run(self):
+        # Get evaluation from engine
+        self.game.engine.set_position(self.fen)
+        self.evaluation = self.game.engine.get_evaluation()
+
 class Game:
     def __init__(self):
         self.next_player = 'white'
@@ -54,6 +66,7 @@ class Game:
         self.level = 10
         self.game_mode = 0
         self.evaluation = None
+        self.evaluation_lock = Lock()
         
         # Game state
         self.game_over = False
@@ -62,7 +75,9 @@ class Game:
         
         # Threading
         self.engine_thread = None
+        self.evaluation_thread = None
         self.pending_engine_move = None
+        self.pending_evaluation = None
 
     # Game mode methods
     def set_game_mode(self, mode):
@@ -128,19 +143,20 @@ class Game:
         surface.blit(info_surface, (WIDTH - 250, 70))
         
         # Display evaluation if available
-        if self.evaluation and 'type' in self.evaluation and 'value' in self.evaluation:
-            eval_type = self.evaluation['type']
-            value = self.evaluation['value']
-            
-            if eval_type == 'cp':
-                score = value / 100.0
-                eval_text = f"Eval: {score:+.2f}"
-            else:  # mate
-                moves_to_mate = abs(value)
-                eval_text = f"Mate in {moves_to_mate} for {'white' if value > 0 else 'black'}"
-            
-            eval_surface = self.config.font.render(eval_text, True, (255, 255, 255))
-            surface.blit(eval_surface, (WIDTH - 250, 100))
+        with self.evaluation_lock:
+            if self.evaluation and 'type' in self.evaluation and 'value' in self.evaluation:
+                eval_type = self.evaluation['type']
+                value = self.evaluation['value']
+                
+                if eval_type == 'cp':
+                    score = value / 100.0
+                    eval_text = f"Eval: {score:+.2f}"
+                else:  # mate
+                    moves_to_mate = abs(value)
+                    eval_text = f"Mate in {moves_to_mate} for {'white' if value > 0 else 'black'}"
+                
+                eval_surface = self.config.font.render(eval_text, True, (255, 255, 255))
+                surface.blit(eval_surface, (WIDTH - 250, 100))
 
         # Display level info
         level_info = f"Level: {self.level}"
@@ -267,11 +283,11 @@ class Game:
         self.level = level
         self.engine.set_skill_level(level)
 
-    def get_engine_evaluation(self):
-        fen = self.board.to_fen(self.next_player)
-        self.engine.set_position(fen)
-        self.evaluation = self.engine.get_evaluation()
-        return self.evaluation
+    def schedule_evaluation(self):
+        if not self.evaluation_thread:
+            fen = self.board.to_fen(self.next_player)
+            self.evaluation_thread = EvaluationWorker(self, fen)
+            self.evaluation_thread.start()
 
     def make_engine_move(self):
         if self.pending_engine_move:
@@ -280,7 +296,6 @@ class Game:
             captured = self.board.squares[move.final.row][move.final.col].has_piece()
             
             self.board.move(piece, move)
-            self.board.set_true_en_passant(piece)
             self.play_sound(captured)
             self.next_turn()
             self.check_game_state()
