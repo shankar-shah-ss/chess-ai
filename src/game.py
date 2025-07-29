@@ -1,6 +1,7 @@
 # game.py - Updated with Enhanced Analysis Integration
 import pygame
 import time
+import queue
 from threading import Thread, Lock
 from const import *
 from board import Board
@@ -12,11 +13,11 @@ from move import Move
 from piece import King
 
 class EngineWorker(Thread):
-    def __init__(self, game, fen):
+    def __init__(self, game, fen, move_queue):
         super().__init__()
         self.game = game
         self.fen = fen
-        self.move = None
+        self.move_queue = move_queue
 
     def run(self):
         # Get best move from engine
@@ -33,7 +34,7 @@ class EngineWorker(Thread):
                 
                 initial = Square(from_row, from_col)
                 final = Square(to_row, to_col)
-                self.move = Move(initial, final)
+                self.move_queue.put(Move(initial, final))
             except (KeyError, ValueError):
                 pass
 
@@ -78,8 +79,7 @@ class Game:
         # Threading
         self.engine_thread = None
         self.evaluation_thread = None
-        self.pending_engine_move = None
-        self.pending_evaluation = None
+        self.engine_move_queue = queue.Queue()
 
     # Game mode methods
     def set_game_mode(self, mode):
@@ -295,8 +295,9 @@ class Game:
             self.evaluation_thread.start()
 
     def make_engine_move(self):
-        if self.pending_engine_move:
-            move = self.pending_engine_move
+        try:
+            # Non-blocking get from queue
+            move = self.engine_move_queue.get_nowait()
             piece = self.board.squares[move.initial.row][move.initial.col].piece
             captured = self.board.squares[move.final.row][move.final.col].has_piece()
             
@@ -310,15 +311,15 @@ class Game:
             self.next_turn()
             self.check_game_state()
             
-            self.pending_engine_move = None
             self.engine_thread = None
             return True
-        return False
+        except queue.Empty:
+            return False
 
     def schedule_engine_move(self):
-        if not self.engine_thread and not self.pending_engine_move:
+        if not self.engine_thread:
             fen = self.board.to_fen(self.next_player)
-            self.engine_thread = EngineWorker(self, fen)
+            self.engine_thread = EngineWorker(self, fen, self.engine_move_queue)
             self.engine_thread.start()
 
     def increase_level(self):

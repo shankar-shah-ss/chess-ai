@@ -1,4 +1,4 @@
-# enhanced_analysis.py
+# enhanced_analysis.py - Updated with improved summary generation
 import threading
 import time
 from threading import Lock
@@ -43,15 +43,15 @@ class EnhancedGameAnalyzer:
         
         # Classification colors for display
         self.COLORS = {
-            'BRILLIANT': (0, 200, 255),     # Bright blue
-            'GREAT': (0, 255, 100),         # Bright green
-            'BEST': (0, 200, 0),            # Green
-            'EXCELLENT': (100, 255, 100),   # Light green
-            'OKAY': (150, 255, 150),        # Very light green
-            'MISS': (255, 200, 0),          # Orange-yellow
-            'INACCURACY': (255, 255, 100),  # Light yellow
-            'MISTAKE': (255, 165, 0),       # Orange
-            'BLUNDER': (255, 0, 0)          # Red
+            'BRILLIANT': (28, 158, 255),
+            'GREAT': (96, 169, 23),
+            'BEST': (96, 169, 23),
+            'EXCELLENT': (96, 169, 23),
+            'OKAY': (115, 192, 67),
+            'MISS': (255, 167, 38),
+            'INACCURACY': (255, 167, 38),
+            'MISTAKE': (255, 146, 146),
+            'BLUNDER': (242, 113, 102)
         }
         
     def record_move(self, move, player, position_before):
@@ -160,7 +160,7 @@ class EnhancedGameAnalyzer:
         candidates = []
         
         # Get moves at different depths for variety
-        for depth in [12, 15, 18, 20]:
+        for depth in [15, 18]:
             try:
                 self.engine.set_depth(depth)
                 best_move = self.engine.get_best_move()
@@ -232,21 +232,28 @@ class EnhancedGameAnalyzer:
         if not candidates or actual_move not in candidates:
             return 0
             
-        # Position in candidate list (0 = best move)
         try:
+            # Position in candidate list (0 = best move)
             position = candidates.index(actual_move)
-            # Quality decreases based on position in candidate list
-            base_quality = max(0, 100 - (position * 20))
+            
+            # Base quality decreases based on position
+            base_quality = max(0, 100 - (position * 25))
             
             # Adjust based on evaluation change
             eval_change = self._calculate_eval_loss(eval_before, eval_after)
-            if eval_change == 0:
-                return min(100, base_quality + 10)  # Bonus for no eval loss
-            elif eval_change < 25:
-                return base_quality
-            else:
-                return max(0, base_quality - (eval_change // 10))
+            
+            # Apply penalty for evaluation loss
+            if eval_change > 0:
+                penalty = min(50, eval_change * 0.5)  # 0.5 penalty per centipawn
+                base_quality -= penalty
                 
+            # Bonus for finding best move in difficult positions
+            if position == 0 and eval_before and eval_before.get('type') == 'cp':
+                if abs(eval_before['value']) > 200:  # Significant advantage/disadvantage
+                    base_quality = min(100, base_quality + 10)
+                    
+            return max(0, min(100, base_quality))
+            
         except ValueError:
             return 0
             
@@ -402,7 +409,7 @@ class EnhancedGameAnalyzer:
         return self.analysis_complete
         
     def get_game_summary(self):
-        """Get a summary of the game analysis"""
+        """Get a comprehensive game summary with Chess.com style stats"""
         if not self.analysis_complete:
             return None
             
@@ -412,24 +419,137 @@ class EnhancedGameAnalyzer:
         if not moves:
             return None
             
-        # Count move classifications
+        # Classification weights for accuracy calculation
+        classification_weights = {
+            'BRILLIANT': 1.0,
+            'GREAT': 0.95,
+            'BEST': 0.9,
+            'EXCELLENT': 0.85,
+            'OKAY': 0.7,
+            'MISS': 0.4,
+            'INACCURACY': 0.3,
+            'MISTAKE': 0.15,
+            'BLUNDER': 0.0
+        }
+        
+        # Separate moves by player
+        white_moves = [m for m in moves if m.player == 'white']
+        black_moves = [m for m in moves if m.player == 'black']
+        
+        # Calculate accuracies
+        def calculate_accuracy(player_moves):
+            if not player_moves:
+                return 0
+                
+            total_score = 0
+            for move in player_moves:
+                base_score = classification_weights.get(move.classification, 0.5)
+                quality_bonus = getattr(move, 'move_quality_score', 50) / 100
+                total_score += base_score * quality_bonus
+                
+            return (total_score / len(player_moves)) * 100
+        
+        white_accuracy = calculate_accuracy(white_moves)
+        black_accuracy = calculate_accuracy(black_moves)
+        overall_accuracy = calculate_accuracy(moves)
+        
+        # Estimate ELO ratings based on accuracy
+        def accuracy_to_elo(accuracy):
+            # More sophisticated ELO estimation
+            if accuracy >= 95:
+                return 2200 + int((accuracy - 95) * 40)  # Expert+
+            elif accuracy >= 90:
+                return 1900 + int((accuracy - 90) * 60)  # Expert
+            elif accuracy >= 85:
+                return 1600 + int((accuracy - 85) * 60)  # Advanced
+            elif accuracy >= 80:
+                return 1400 + int((accuracy - 80) * 40)  # Intermediate
+            elif accuracy >= 70:
+                return 1200 + int((accuracy - 70) * 20)  # Beginner+
+            elif accuracy >= 60:
+                return 1000 + int((accuracy - 60) * 20)  # Beginner
+            else:
+                return 800 + int(accuracy * 2.5)  # Novice
+        
+        white_elo = accuracy_to_elo(white_accuracy)
+        black_elo = accuracy_to_elo(black_accuracy)
+        
+        # Count classifications
         classifications = {}
+        white_classifications = {}
+        black_classifications = {}
+        
         for move in moves:
-            classifications[move.classification] = classifications.get(move.classification, 0) + 1
+            classification = move.classification
+            classifications[classification] = classifications.get(classification, 0) + 1
             
-        # Calculate accuracy (percentage of moves that weren't mistakes/blunders)
+            if move.player == 'white':
+                white_classifications[classification] = white_classifications.get(classification, 0) + 1
+            else:
+                black_classifications[classification] = black_classifications.get(classification, 0) + 1
+        
+        # Calculate game statistics
         total_moves = len(moves)
-        good_moves = sum(1 for m in moves if m.classification not in ['MISTAKE', 'BLUNDER'])
-        accuracy = (good_moves / total_moves) * 100 if total_moves > 0 else 0
+        brilliant_moves = classifications.get('BRILLIANT', 0)
+        great_moves = classifications.get('GREAT', 0)
+        best_moves = classifications.get('BEST', 0)
+        mistakes = classifications.get('MISTAKE', 0) + classifications.get('INACCURACY', 0)
+        blunders = classifications.get('BLUNDER', 0)
+        
+        # Game phase analysis
+        opening_moves = moves[:min(20, len(moves))]
+        middlegame_moves = moves[20:max(20, len(moves)-10)]
+        endgame_moves = moves[max(20, len(moves)-10):]
+        
+        def phase_accuracy(phase_moves):
+            if not phase_moves:
+                return 0
+            return calculate_accuracy(phase_moves)
         
         return {
+            # Basic stats
             'total_moves': total_moves,
+            'white_moves': len(white_moves),
+            'black_moves': len(black_moves),
+            
+            # Accuracy stats
+            'accuracy': overall_accuracy,
+            'white_accuracy': white_accuracy,
+            'black_accuracy': black_accuracy,
+            
+            # ELO estimates
+            'white_elo': white_elo,
+            'black_elo': black_elo,
+            
+            # Move classifications
             'classifications': classifications,
-            'accuracy': accuracy,
-            'brilliant_moves': classifications.get('BRILLIANT', 0),
-            'great_moves': classifications.get('GREAT', 0),
-            'mistakes': classifications.get('MISTAKE', 0),
-            'blunders': classifications.get('BLUNDER', 0)
+            'white_classifications': white_classifications,
+            'black_classifications': black_classifications,
+            
+            # Key statistics
+            'brilliant_moves': brilliant_moves,
+            'great_moves': great_moves,
+            'best_moves': best_moves,
+            'mistakes': mistakes,
+            'blunders': blunders,
+            
+            # Phase analysis
+            'opening_accuracy': phase_accuracy(opening_moves),
+            'middlegame_accuracy': phase_accuracy(middlegame_moves),
+            'endgame_accuracy': phase_accuracy(endgame_moves),
+            
+            # Additional metrics
+            'average_eval_loss': sum(getattr(m, 'eval_loss', 0) for m in moves) / len(moves) if moves else 0,
+            'total_eval_loss': sum(getattr(m, 'eval_loss', 0) for m in moves),
+            'sacrifices_made': sum(1 for m in moves if getattr(m, 'is_sacrifice', False)),
+            
+            # Performance by player
+            'white_blunders': white_classifications.get('BLUNDER', 0),
+            'black_blunders': black_classifications.get('BLUNDER', 0),
+            'white_mistakes': white_classifications.get('MISTAKE', 0) + white_classifications.get('INACCURACY', 0),
+            'black_mistakes': black_classifications.get('MISTAKE', 0) + black_classifications.get('INACCURACY', 0),
+            'white_brilliancies': white_classifications.get('BRILLIANT', 0),
+            'black_brilliancies': black_classifications.get('BRILLIANT', 0)
         }
         
     def reset(self):
