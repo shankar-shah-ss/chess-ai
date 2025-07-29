@@ -1,3 +1,5 @@
+# [file name]: game.py
+# [file content begin]
 import pygame
 import time
 from threading import Thread
@@ -324,3 +326,4 @@ class Game:
         if self.board.is_threefold_repetition():
             self.game_over = True
             self.winner = None
+# [file content end]

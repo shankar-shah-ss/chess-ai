@@ -1,3 +1,5 @@
+# [file name]: main.py
+# [file content begin]
 import pygame
 import sys
 
@@ -202,3 +204,4 @@ class Main:
 
 main = Main()
 main.mainloop()
+# [file content end]
