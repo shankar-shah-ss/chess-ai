@@ -20,7 +20,12 @@ class Config:
         self.check_sound = self._load_sound('check.wav')
 
     def _load_sound(self, filename):
-        path = os.path.join('assets/sounds', filename)
+        # Try relative path from src directory first
+        path = os.path.join('..', 'assets', 'sounds', filename)
+        if os.path.exists(path):
+            return Sound(path)
+        # Fallback to original path
+        path = os.path.join('assets', 'sounds', filename)
         if os.path.exists(path):
             return Sound(path)
         print(f"Warning: Sound file not found - {path}")

@@ -28,8 +28,13 @@ class Piece:
         self.texture_rect = texture_rect
 
     def set_texture(self, size=128):
-        self.texture = os.path.join(
-            f'assets/images/imgs-{size}px/{self.color}_{self.name}.png')
+        # Try relative path from src directory first
+        texture_path = os.path.join('..', 'assets', 'images', f'imgs-{size}px', f'{self.color}_{self.name}.png')
+        if os.path.exists(texture_path):
+            self.texture = texture_path
+        else:
+            # Fallback to original path
+            self.texture = os.path.join(f'assets/images/imgs-{size}px/{self.color}_{self.name}.png')
 
     def add_move(self, move):
         self.moves.append(move)

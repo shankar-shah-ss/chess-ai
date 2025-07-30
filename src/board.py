@@ -57,7 +57,10 @@ class Board:
                 captured_pawn_col = final.col    # Same column as target square
                 self.squares[captured_pawn_row][captured_pawn_col].piece = None
                 if not testing:
-                    sound = Sound(os.path.join('assets/sounds/capture.wav'))
+                    sound_path = os.path.join('..', 'assets', 'sounds', 'capture.wav')
+                    if not os.path.exists(sound_path):
+                        sound_path = os.path.join('assets', 'sounds', 'capture.wav')
+                    sound = Sound(sound_path)
                     sound.play()
             
             # Handle pawn promotion

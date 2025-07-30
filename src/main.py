@@ -7,6 +7,7 @@ from game import Game
 from square import Square
 from move import Move
 from analysis_manager import AnalysisManager
+from chess_com_analysis import ChessComAnalysis
 
 class Main:
     def __init__(self):
@@ -18,6 +19,10 @@ class Main:
         
         # Initialize modern analysis manager
         self.analysis_manager = AnalysisManager(self.game.config, self.game.engine)
+        
+        # Initialize Chess.com-style analysis screen
+        self.chess_com_analysis = ChessComAnalysis(self.game.config)
+        self.chess_com_analysis.set_analyzer(self.analysis_manager.analyzer)
         
         # Connect analysis manager to game
         self.game.set_analysis_manager(self.analysis_manager)
@@ -60,26 +65,38 @@ class Main:
 
             # Handle analysis mode rendering
             if analysis_manager.active:
-                # Render modern analysis screen
-                if analysis_manager.render(screen):
-                    pygame.display.update()
+                # Use Chess.com-style analysis screen
+                if not self.chess_com_analysis.active:
+                    self.chess_com_analysis.activate()
+                
+                # Ensure Chess.com analysis has latest data
+                self.chess_com_analysis._update_analysis_data()
                     
-                    # Process events for analysis mode
-                    for event in pygame.event.get():
-                        # Handle analysis manager input first
-                        if analysis_manager.handle_input(event):
-                            continue
-                            
-                        # Handle global keys
-                        if event.type == pygame.KEYDOWN:
-                            if event.key == pygame.K_r:
-                                self._reset_game(game, analysis_manager)
-                            elif event.key == pygame.K_F11:
-                                self._toggle_fullscreen()
-                        elif event.type == pygame.QUIT:
-                            pygame.quit()
-                            sys.exit()
-                    continue
+                self.chess_com_analysis.render(screen)
+                pygame.display.update()
+                    
+                # Process events for analysis mode
+                for event in pygame.event.get():
+                    # Handle Chess.com analysis input first
+                    if self.chess_com_analysis.handle_input(event):
+                        # If analysis was deactivated, also exit analysis manager
+                        if not self.chess_com_analysis.active:
+                            analysis_manager.exit_analysis_mode()
+                        continue
+                        
+                    # Handle global keys
+                    if event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_r:
+                            self._reset_game(game, analysis_manager)
+                        elif event.key == pygame.K_F11:
+                            self._toggle_fullscreen()
+                        elif event.key == pygame.K_ESCAPE:
+                            self.chess_com_analysis.deactivate()
+                            analysis_manager.exit_analysis_mode()
+                    elif event.type == pygame.QUIT:
+                        pygame.quit()
+                        sys.exit()
+                continue
 
             # Handle game over state
             if game.game_over:
@@ -139,103 +156,167 @@ class Main:
     def _render_modern_game_info(self, screen, game, analysis_manager):
         """Render modern game information panel"""
         # Info panel background
-        panel_width = 280
-        panel_height = 200
+        panel_width = 320
+        panel_height = 240
         panel_x = WIDTH - panel_width - 20
         panel_y = 20
         
-        # Modern panel styling
+        # Modern panel styling with shadow
+        shadow_surface = pygame.Surface((panel_width + 8, panel_height + 8), pygame.SRCALPHA)
+        pygame.draw.rect(shadow_surface, (0, 0, 0, 60), pygame.Rect(0, 0, panel_width + 8, panel_height + 8), border_radius=15)
+        screen.blit(shadow_surface, (panel_x + 4, panel_y + 4))
+        
         panel_surface = pygame.Surface((panel_width, panel_height), pygame.SRCALPHA)
-        panel_bg_color = (40, 46, 58, 180)  # Semi-transparent
+        panel_bg_color = (40, 46, 58, 220)  # Semi-transparent
         pygame.draw.rect(panel_surface, panel_bg_color, pygame.Rect(0, 0, panel_width, panel_height), border_radius=15)
         pygame.draw.rect(panel_surface, (84, 92, 108, 255), pygame.Rect(0, 0, panel_width, panel_height), 2, border_radius=15)
         screen.blit(panel_surface, (panel_x, panel_y))
 
+        # Title
+        title_font = pygame.font.SysFont('Segoe UI', 18, bold=True)
+        title_surface = title_font.render("Game Status", True, (255, 255, 255))
+        screen.blit(title_surface, (panel_x + 20, panel_y + 15))
+
         # Game mode section
-        mode_font = pygame.font.SysFont('Segoe UI', 16, bold=True)
+        mode_font = pygame.font.SysFont('Segoe UI', 14, bold=True)
         mode_text = {
             0: "Human vs Human",
             1: "Human vs Engine", 
             2: "Engine vs Engine"
         }[game.game_mode]
         
-        mode_surface = mode_font.render("Game Mode", True, (255, 255, 255))
-        screen.blit(mode_surface, (panel_x + 15, panel_y + 15))
+        mode_label = mode_font.render("Mode:", True, (181, 181, 181))
+        screen.blit(mode_label, (panel_x + 20, panel_y + 45))
         
         mode_value_font = pygame.font.SysFont('Segoe UI', 14)
-        mode_value_surface = mode_value_font.render(mode_text, True, (181, 181, 181))
-        screen.blit(mode_value_surface, (panel_x + 15, panel_y + 40))
+        mode_value_surface = mode_value_font.render(mode_text, True, (255, 255, 255))
+        screen.blit(mode_value_surface, (panel_x + 70, panel_y + 45))
         
         # Engine settings
         if game.engine_white or game.engine_black:
-            settings_font = pygame.font.SysFont('Segoe UI', 14)
+            settings_font = pygame.font.SysFont('Segoe UI', 13)
             
-            level_text = f"Engine Level: {game.level}/20"
-            level_surface = settings_font.render(level_text, True, (181, 181, 181))
-            screen.blit(level_surface, (panel_x + 15, panel_y + 65))
+            level_label = settings_font.render("Level:", True, (181, 181, 181))
+            screen.blit(level_label, (panel_x + 20, panel_y + 70))
             
-            depth_text = f"Search Depth: {game.depth}"
-            depth_surface = settings_font.render(depth_text, True, (181, 181, 181))
-            screen.blit(depth_surface, (panel_x + 15, panel_y + 85))
+            level_value = settings_font.render(f"{game.level}/20", True, (129, 182, 76))
+            screen.blit(level_value, (panel_x + 70, panel_y + 70))
+            
+            depth_label = settings_font.render("Depth:", True, (181, 181, 181))
+            screen.blit(depth_label, (panel_x + 150, panel_y + 70))
+            
+            depth_value = settings_font.render(str(game.depth), True, (129, 182, 76))
+            screen.blit(depth_value, (panel_x + 200, panel_y + 70))
+            
+            # Show configuration status with animation
+            if hasattr(game, 'config_thread') and game.config_thread and game.config_thread.is_alive():
+                # Animated dots for visual feedback
+                dots = "." * (int(pygame.time.get_ticks() / 300) % 4)
+                config_status = settings_font.render(f"Configuring{dots}", True, (255, 193, 7))
+                screen.blit(config_status, (panel_x + 250, panel_y + 70))
         
-        # Current player indicator
+        # Current player indicator with visual circle
         player_font = pygame.font.SysFont('Segoe UI', 14, bold=True)
-        player_text = f"Turn: {game.next_player.title()}"
-        player_color = (255, 255, 255) if game.next_player == 'white' else (160, 160, 160)
-        player_surface = player_font.render(player_text, True, player_color)
-        screen.blit(player_surface, (panel_x + 15, panel_y + 110))
+        player_label = player_font.render("Turn:", True, (181, 181, 181))
+        screen.blit(player_label, (panel_x + 20, panel_y + 100))
         
-        # Evaluation display
+        # Player indicator circle
+        circle_color = (255, 255, 255) if game.next_player == 'white' else (100, 100, 100)
+        pygame.draw.circle(screen, circle_color, (panel_x + 70, panel_y + 107), 8)
+        pygame.draw.circle(screen, (181, 181, 181), (panel_x + 70, panel_y + 107), 8, 2)
+        
+        player_text = game.next_player.title()
+        player_surface = player_font.render(player_text, True, (255, 255, 255))
+        screen.blit(player_surface, (panel_x + 90, panel_y + 100))
+        
+        # Evaluation display with bar
         with game.evaluation_lock:
             if game.evaluation and 'type' in game.evaluation and 'value' in game.evaluation:
                 eval_font = pygame.font.SysFont('Segoe UI', 13)
                 eval_type = game.evaluation['type']
                 value = game.evaluation['value']
                 
+                eval_label = eval_font.render("Eval:", True, (181, 181, 181))
+                screen.blit(eval_label, (panel_x + 20, panel_y + 130))
+                
                 if eval_type == 'cp':
                     score = value / 100.0
-                    eval_text = f"Position: {score:+.2f}"
+                    eval_text = f"{score:+.2f}"
                     eval_color = (129, 182, 76) if score > 0 else (242, 113, 102) if score < -0.5 else (181, 181, 181)
+                    
+                    # Evaluation bar
+                    bar_width = 120
+                    bar_height = 6
+                    bar_x = panel_x + 70
+                    bar_y = panel_y + 135
+                    
+                    # Background bar
+                    pygame.draw.rect(screen, (60, 60, 60), (bar_x, bar_y, bar_width, bar_height), border_radius=3)
+                    
+                    # Fill bar based on evaluation
+                    normalized_score = max(-2, min(2, score))  # Clamp between -2 and +2
+                    fill_position = (normalized_score + 2) / 4  # Normalize to 0-1
+                    fill_width = int(bar_width * fill_position)
+                    
+                    fill_color = (129, 182, 76) if score > 0 else (242, 113, 102)
+                    if fill_width > 0:
+                        pygame.draw.rect(screen, fill_color, (bar_x, bar_y, fill_width, bar_height), border_radius=3)
+                    
                 else:  # mate
                     moves_to_mate = abs(value)
-                    side = 'White' if value > 0 else 'Black'
-                    eval_text = f"Mate in {moves_to_mate} for {side}"
+                    side = 'W' if value > 0 else 'B'
+                    eval_text = f"M{moves_to_mate} {side}"
                     eval_color = (129, 182, 76) if value > 0 else (242, 113, 102)
                 
                 eval_surface = eval_font.render(eval_text, True, eval_color)
-                screen.blit(eval_surface, (panel_x + 15, panel_y + 135))
+                screen.blit(eval_surface, (panel_x + 200, panel_y + 130))
+        
+        # Game progress
+        moves_recorded = len(analysis_manager.analyzer.game_moves)
+        if moves_recorded > 0:
+            progress_font = pygame.font.SysFont('Segoe UI', 12)
+            progress_text = f"Moves recorded: {moves_recorded}"
+            progress_surface = progress_font.render(progress_text, True, (181, 181, 181))
+            screen.blit(progress_surface, (panel_x + 20, panel_y + 160))
         
         # Controls info
         controls_font = pygame.font.SysFont('Segoe UI', 11)
-        controls_text = "Press 'A' for Analysis after game"
-        controls_surface = controls_font.render(controls_text, True, (129, 182, 76))
-        screen.blit(controls_surface, (panel_x + 15, panel_y + 165))
+        controls = [
+            "Press 'A' for Analysis",
+            "Press 'S' for Summary"
+        ]
         
-        # Game progress if moves recorded
-        if len(analysis_manager.analyzer.game_moves) > 0:
-            moves_text = f"Moves: {len(analysis_manager.analyzer.game_moves)}"
-            moves_surface = controls_font.render(moves_text, True, (181, 181, 181))
-            screen.blit(moves_surface, (panel_x + 15, panel_y + 180))
+        y_offset = 180
+        for control in controls:
+            control_surface = controls_font.render(control, True, (129, 182, 76))
+            screen.blit(control_surface, (panel_x + 20, panel_y + y_offset))
+            y_offset += 18
 
     def _render_game_over_overlay(self, screen, game):
         """Render modern game over overlay"""
         # Semi-transparent overlay
         overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 150))
+        overlay.fill((0, 0, 0, 180))
         screen.blit(overlay, (0, 0))
         
-        # Game over panel
-        panel_width = 400
-        panel_height = 200
+        # Game over panel with shadow
+        panel_width = 450
+        panel_height = 250
         panel_x = (WIDTH - panel_width) // 2
         panel_y = (HEIGHT - panel_height) // 2
         
+        # Shadow
+        shadow_surface = pygame.Surface((panel_width + 16, panel_height + 16), pygame.SRCALPHA)
+        pygame.draw.rect(shadow_surface, (0, 0, 0, 100), pygame.Rect(0, 0, panel_width + 16, panel_height + 16), border_radius=25)
+        screen.blit(shadow_surface, (panel_x + 8, panel_y + 8))
+        
+        # Main panel
         panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
         pygame.draw.rect(screen, (40, 46, 58), panel_rect, border_radius=20)
         pygame.draw.rect(screen, (84, 92, 108), panel_rect, 3, border_radius=20)
         
         # Game result
-        result_font = pygame.font.SysFont('Segoe UI', 32, bold=True)
+        result_font = pygame.font.SysFont('Segoe UI', 36, bold=True)
         if game.winner:
             result_text = f"{game.winner.title()} Wins!"
             result_color = (129, 182, 76)
@@ -244,23 +325,41 @@ class Main:
             result_color = (181, 181, 181)
             
         result_surface = result_font.render(result_text, True, result_color)
-        result_rect = result_surface.get_rect(center=(panel_x + panel_width // 2, panel_y + 50))
+        result_rect = result_surface.get_rect(center=(panel_x + panel_width // 2, panel_y + 60))
         screen.blit(result_surface, result_rect)
         
-        # Options
+        # Separator line
+        pygame.draw.line(screen, (84, 92, 108), (panel_x + 50, panel_y + 100), (panel_x + panel_width - 50, panel_y + 100), 2)
+        
+        # Options with modern styling
         options_font = pygame.font.SysFont('Segoe UI', 16)
+        option_descriptions = pygame.font.SysFont('Segoe UI', 12)
+        
         options = [
-            "Press 'R' to restart",
-            "Press 'A' for analysis", 
-            "Press 'S' for summary"
+            ("R", "Restart Game", "Start a new game"),
+            ("A", "Analysis Mode", "Review game with engine analysis"),
+            ("S", "Game Summary", "View performance statistics")
         ]
         
-        y_offset = 100
-        for option in options:
-            option_surface = options_font.render(option, True, (255, 255, 255))
-            option_rect = option_surface.get_rect(center=(panel_x + panel_width // 2, panel_y + y_offset))
-            screen.blit(option_surface, option_rect)
-            y_offset += 30
+        y_offset = 130
+        for key, title, desc in options:
+            # Key badge
+            key_rect = pygame.Rect(panel_x + 50, panel_y + y_offset - 5, 30, 25)
+            pygame.draw.rect(screen, (129, 182, 76), key_rect, border_radius=5)
+            
+            key_surface = pygame.font.SysFont('Segoe UI', 14, bold=True).render(key, True, (40, 46, 58))
+            key_text_rect = key_surface.get_rect(center=key_rect.center)
+            screen.blit(key_surface, key_text_rect)
+            
+            # Option title
+            title_surface = options_font.render(title, True, (255, 255, 255))
+            screen.blit(title_surface, (panel_x + 95, panel_y + y_offset - 2))
+            
+            # Option description
+            desc_surface = option_descriptions.render(desc, True, (181, 181, 181))
+            screen.blit(desc_surface, (panel_x + 95, panel_y + y_offset + 18))
+            
+            y_offset += 45
 
     def _handle_game_event(self, event, game, board, dragger, analysis_manager):
         """Handle game events with modern controls"""
@@ -388,10 +487,12 @@ class Main:
         game.reset()
         analysis_manager.reset()
         
-        # Reconnect references
-        self.game = game
-        analysis_manager = self.analysis_manager
-        self.game.set_analysis_manager(analysis_manager)
+        # Reset Chess.com analysis screen
+        self.chess_com_analysis.deactivate()
+        self.chess_com_analysis.set_analyzer(analysis_manager.analyzer)
+        
+        # Reconnect references after reset
+        game.set_analysis_manager(analysis_manager)
 
     def _toggle_fullscreen(self):
         """Toggle fullscreen mode"""
@@ -403,12 +504,23 @@ class Main:
         subtitle_font = pygame.font.SysFont('Segoe UI', 24)
         info_font = pygame.font.SysFont('Segoe UI', 16)
         
-        # Background
-        self.screen.fill((40, 46, 58))
+        # Gradient background
+        for y in range(HEIGHT):
+            color_intensity = int(40 + (y / HEIGHT) * 20)
+            color = (color_intensity, color_intensity + 6, color_intensity + 18)
+            pygame.draw.line(self.screen, color, (0, y), (WIDTH, y))
         
-        # Title
-        title_surface = startup_font.render("Modern Chess", True, (255, 255, 255))
+        # Title with shadow
+        title_text = "Modern Chess"
+        title_surface = startup_font.render(title_text, True, (255, 255, 255))
+        title_shadow = startup_font.render(title_text, True, (0, 0, 0))
+        
         title_rect = title_surface.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 100))
+        shadow_rect = title_rect.copy()
+        shadow_rect.x += 3
+        shadow_rect.y += 3
+        
+        self.screen.blit(title_shadow, shadow_rect)
         self.screen.blit(title_surface, title_rect)
         
         # Subtitle
@@ -416,25 +528,34 @@ class Main:
         subtitle_rect = subtitle_surface.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 60))
         self.screen.blit(subtitle_surface, subtitle_rect)
         
-        # Instructions
+        # Instructions panel
+        panel_width = 600
+        panel_height = 200
+        panel_x = (WIDTH - panel_width) // 2
+        panel_y = HEIGHT // 2 - 10
+        
+        panel_surface = pygame.Surface((panel_width, panel_height), pygame.SRCALPHA)
+        pygame.draw.rect(panel_surface, (0, 0, 0, 100), pygame.Rect(0, 0, panel_width, panel_height), border_radius=15)
+        self.screen.blit(panel_surface, (panel_x, panel_y))
+        
         instructions = [
             "Game Modes: 1 (Human vs Human) | 2 (Human vs Engine) | 3 (Engine vs Engine)",
-            "Engine: E/D (Toggle) | ↑/↓ (Depth) | ←/→ (Level)",
-            "Analysis: A (Enter Analysis) | S (Summary)",
+            "Engine: E/D (Toggle) | ↑/↓ (Depth) | ←/→ (Level) | +/- (Quick Level) [Non-blocking]",
+            "Analysis: A (Enter Analysis) | S (Summary) | ESC (Exit Analysis)",
             "Other: T (Theme) | R (Reset) | I (Info Panel) | F11 (Fullscreen)"
         ]
         
-        y_offset = HEIGHT // 2 + 20
+        y_offset = panel_y + 30
         for instruction in instructions:
-            instruction_surface = info_font.render(instruction, True, (181, 181, 181))
+            instruction_surface = info_font.render(instruction, True, (255, 255, 255))
             instruction_rect = instruction_surface.get_rect(center=(WIDTH // 2, y_offset))
             self.screen.blit(instruction_surface, instruction_rect)
             y_offset += 30
             
-        # Start prompt
+        # Start prompt with animation effect
         start_font = pygame.font.SysFont('Segoe UI', 20, bold=True)
         start_surface = start_font.render("Click anywhere to start", True, (129, 182, 76))
-        start_rect = start_surface.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 150))
+        start_rect = start_surface.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 160))
         self.screen.blit(start_surface, start_rect)
         
         pygame.display.update()

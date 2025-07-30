@@ -1,8 +1,8 @@
 # [file name]: const.py
 # [file content begin]
 # Screen dimensions
-WIDTH = 1000
-HEIGHT = 1000
+WIDTH = 900
+HEIGHT = 900
 
 # Board dimensions
 ROWS = 8
