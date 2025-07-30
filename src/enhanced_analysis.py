@@ -1,3 +1,5 @@
+# Move this to the top of the file
+import chess
 # enhanced_analysis.py - Updated with improved summary generation
 import threading
 import time

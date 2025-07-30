@@ -69,6 +69,35 @@ class AnalysisScreen:
         # Fonts
         self.fonts = self._setup_fonts()
         
+        # Piece images cache
+        self.piece_images = {}
+        self._load_piece_images()
+        
+    def _load_piece_images(self):
+        """Load and cache piece images for better performance"""
+        piece_files = {
+            'K': 'white_king.png', 'Q': 'white_queen.png', 'R': 'white_rook.png',
+            'B': 'white_bishop.png', 'N': 'white_knight.png', 'P': 'white_pawn.png',
+            'k': 'black_king.png', 'q': 'black_queen.png', 'r': 'black_rook.png', 
+            'b': 'black_bishop.png', 'n': 'black_knight.png', 'p': 'black_pawn.png'
+        }
+        
+        base_paths = [
+            os.path.join('assets', 'images', 'imgs-80px'),
+            os.path.join('..', 'assets', 'images', 'imgs-80px')
+        ]
+        
+        for char, filename in piece_files.items():
+            for base_path in base_paths:
+                try:
+                    piece_path = os.path.join(base_path, filename)
+                    if os.path.exists(piece_path):
+                        img = pygame.image.load(piece_path)
+                        self.piece_images[char] = img
+                        break
+                except:
+                    continue
+                
     def setup_layout(self):
         """Setup responsive layout"""
         self.screen_width = WIDTH
@@ -321,13 +350,6 @@ class AnalysisScreen:
             
     def _render_pieces_from_fen(self, surface, board_fen):
         """Render pieces with modern styling and shadows"""
-        piece_files = {
-            'K': 'white_king.png', 'Q': 'white_queen.png', 'R': 'white_rook.png',
-            'B': 'white_bishop.png', 'N': 'white_knight.png', 'P': 'white_pawn.png',
-            'k': 'black_king.png', 'q': 'black_queen.png', 'r': 'black_rook.png', 
-            'b': 'black_bishop.png', 'n': 'black_knight.png', 'p': 'black_pawn.png'
-        }
-        
         row = 0
         col = 0
         
@@ -337,36 +359,30 @@ class AnalysisScreen:
                 col = 0
             elif char.isdigit():
                 col += int(char)
-            elif char in piece_files:
+            elif char in self.piece_images:
                 x = self.board_x + col * self.square_size + 6
                 y = self.board_y + row * self.square_size + 6
                 
                 try:
-                    # Try relative path from src directory first
-                    piece_file = os.path.join('..', 'assets', 'images', 'imgs-80px', piece_files[char])
-                    if not os.path.exists(piece_file):
-                        piece_file = os.path.join('assets', 'images', 'imgs-80px', piece_files[char])
+                    piece_img = self.piece_images[char]
+                    piece_size = int((self.square_size - 12) * 0.85)
+                    piece_img = pygame.transform.scale(piece_img, (piece_size, piece_size))
                     
-                    if os.path.exists(piece_file):
-                        piece_img = pygame.image.load(piece_file)
-                        piece_size = int((self.square_size - 12) * 0.85)
-                        piece_img = pygame.transform.scale(piece_img, (piece_size, piece_size))
-                        
-                        # Add subtle shadow
-                        shadow_surface = pygame.Surface((piece_size + 2, piece_size + 2), pygame.SRCALPHA)
-                        shadow_surface.fill((0, 0, 0, 30))
-                        
-                        piece_center_x = x + (self.square_size - 12) // 2
-                        piece_center_y = y + (self.square_size - 12) // 2
-                        
-                        # Blit shadow
-                        shadow_rect = shadow_surface.get_rect(center=(piece_center_x + 1, piece_center_y + 1))
-                        surface.blit(shadow_surface, shadow_rect)
-                        
-                        # Blit piece
-                        piece_rect = piece_img.get_rect(center=(piece_center_x, piece_center_y))
-                        surface.blit(piece_img, piece_rect)
-                        
+                    # Add subtle shadow
+                    shadow_surface = pygame.Surface((piece_size + 2, piece_size + 2), pygame.SRCALPHA)
+                    shadow_surface.fill((0, 0, 0, 30))
+                    
+                    piece_center_x = x + (self.square_size - 12) // 2
+                    piece_center_y = y + (self.square_size - 12) // 2
+                    
+                    # Blit shadow
+                    shadow_rect = shadow_surface.get_rect(center=(piece_center_x + 1, piece_center_y + 1))
+                    surface.blit(shadow_surface, shadow_rect)
+                    
+                    # Blit piece
+                    piece_rect = piece_img.get_rect(center=(piece_center_x, piece_center_y))
+                    surface.blit(piece_img, piece_rect)
+                    
                 except Exception as e:
                     # Fallback to text rendering with modern styling
                     self._draw_fallback_piece(surface, char, x, y)
@@ -894,6 +910,26 @@ class AnalysisScreen:
                         self.current_move_index = clicked_move
                         return True
                         
+            # Handle board clicks to jump to moves
+            board_rect = pygame.Rect(self.board_x, self.board_y, self.board_size, self.board_size)
+            if board_rect.collidepoint(event.pos):
+                # Convert mouse position to board coordinates
+                rel_x = event.pos[0] - self.board_x
+                rel_y = event.pos[1] - self.board_y
+                
+                if 0 <= rel_x < self.board_size and 0 <= rel_y < self.board_size:
+                    col = rel_x // self.square_size
+                    row = rel_y // self.square_size
+                    
+                    # Find moves that land on this square
+                    if self.analyzer.is_analysis_complete():
+                        analyzed_moves = self.analyzer.get_analyzed_moves()
+                        for i, move_analysis in enumerate(analyzed_moves):
+                            move = move_analysis.move
+                            if move.final.row == row and move.final.col == col:
+                                self.current_move_index = i
+                                return True
+                                
             # Handle header button clicks
             if 60 >= event.pos[1] >= 16:  # Header area
                 controls_x = self.screen_width - 200

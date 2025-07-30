@@ -1,6 +1,7 @@
 # main.py - Updated with Modern Analysis System Integration
 import pygame
 import sys
+import os
 
 from const import *
 from game import Game
@@ -19,10 +20,6 @@ class Main:
         
         # Initialize modern analysis manager
         self.analysis_manager = AnalysisManager(self.game.config, self.game.engine)
-        
-        # Initialize Chess.com-style analysis screen
-        self.chess_com_analysis = ChessComAnalysis(self.game.config)
-        self.chess_com_analysis.set_analyzer(self.analysis_manager.analyzer)
         
         # Connect analysis manager to game
         self.game.set_analysis_manager(self.analysis_manager)
@@ -65,23 +62,15 @@ class Main:
 
             # Handle analysis mode rendering
             if analysis_manager.active:
-                # Use Chess.com-style analysis screen
-                if not self.chess_com_analysis.active:
-                    self.chess_com_analysis.activate()
-                
-                # Ensure Chess.com analysis has latest data
-                self.chess_com_analysis._update_analysis_data()
-                    
-                self.chess_com_analysis.render(screen)
+                # Render using the analysis manager (which uses AnalysisScreen)
+                analysis_manager.render(screen)
                 pygame.display.update()
                     
                 # Process events for analysis mode
                 for event in pygame.event.get():
-                    # Handle Chess.com analysis input first
-                    if self.chess_com_analysis.handle_input(event):
-                        # If analysis was deactivated, also exit analysis manager
-                        if not self.chess_com_analysis.active:
-                            analysis_manager.exit_analysis_mode()
+                    # Handle analysis manager input
+                    if analysis_manager.handle_input(event):
+                        # If analysis was deactivated, we don't need to do anything special because the loop condition will break next time
                         continue
                         
                     # Handle global keys
@@ -91,8 +80,10 @@ class Main:
                         elif event.key == pygame.K_F11:
                             self._toggle_fullscreen()
                         elif event.key == pygame.K_ESCAPE:
-                            self.chess_com_analysis.deactivate()
                             analysis_manager.exit_analysis_mode()
+                        elif event.key == pygame.K_s:
+                            if analysis_manager.is_analysis_complete():
+                                analysis_manager.toggle_summary()
                     elif event.type == pygame.QUIT:
                         pygame.quit()
                         sys.exit()
@@ -486,10 +477,6 @@ class Main:
         """Reset game and analysis with proper cleanup"""
         game.reset()
         analysis_manager.reset()
-        
-        # Reset Chess.com analysis screen
-        self.chess_com_analysis.deactivate()
-        self.chess_com_analysis.set_analyzer(analysis_manager.analyzer)
         
         # Reconnect references after reset
         game.set_analysis_manager(analysis_manager)
