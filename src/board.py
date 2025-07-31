@@ -16,6 +16,8 @@ class Board:
         self.en_passant_target = None
         self.castling_rights = {'K': True, 'Q': True, 'k': True, 'q': True}
         self.position_signatures = {}  # Track position signatures for repetition
+        self.halfmove_clock = 0  # Track moves since last pawn move or capture (for 50-move rule)
+        self.fullmove_number = 1  # Track full move number
         self._create()
         self._add_pieces('white')
         self._add_pieces('black')
@@ -26,12 +28,16 @@ class Board:
         final = move.final
 
         # Check if this is an en passant capture
-        is_en_passant = (isinstance(piece, Pawn) and 
+        is_en_passant = (piece.name.lower() == 'pawn' and 
                         abs(initial.col - final.col) == 1 and 
                         self.squares[final.row][final.col].isempty() and
                         self.en_passant_target and
                         final.row == self.en_passant_target.row and 
                         final.col == self.en_passant_target.col)
+        
+        # Check if this move is a capture or pawn move (for 50-move rule)
+        is_capture = self.squares[final.row][final.col].has_piece() or is_en_passant
+        is_pawn_move = piece.name.lower() == 'pawn'
         
         # Clear the en passant target from previous move
         old_en_passant = self.en_passant_target
@@ -42,7 +48,7 @@ class Board:
         self.squares[final.row][final.col].piece = piece
 
         # Handle pawn-specific moves
-        if isinstance(piece, Pawn):
+        if piece.name.lower() == 'pawn':
             # Check for double pawn push (sets new en passant target)
             if abs(initial.row - final.row) == 2:
                 self.en_passant_target = Square(
@@ -68,7 +74,7 @@ class Board:
                 self.check_promotion(piece, final)
 
         # Handle king castling
-        if isinstance(piece, King):
+        if piece.name.lower() == 'king':
             # Update castling rights
             if piece.color == 'white':
                 self.castling_rights['K'] = False
@@ -92,7 +98,7 @@ class Board:
                 rook.moved = True
 
         # Handle rook moves - update castling rights
-        if isinstance(piece, Rook):
+        if piece.name.lower() == 'rook':
             if initial.col == 0:  # Queenside rook
                 if piece.color == 'white':
                     self.castling_rights['Q'] = False
@@ -112,6 +118,16 @@ class Board:
 
         # Set last move
         self.last_move = move
+        
+        # Update halfmove clock for 50-move rule
+        if is_capture or is_pawn_move:
+            self.halfmove_clock = 0  # Reset on capture or pawn move
+        else:
+            self.halfmove_clock += 1
+        
+        # Update fullmove number (increments after black's move)
+        if piece.color == 'black':
+            self.fullmove_number += 1
         
         # Record position for next player
         next_player = 'black' if piece.color == 'white' else 'white'
@@ -259,6 +275,10 @@ class Board:
             if count >= 3:
                 return True
         return False
+    
+    def is_fifty_move_rule(self):
+        """Check if 50-move rule applies (50 moves without pawn move or capture)"""
+        return self.halfmove_clock >= 100  # 100 half-moves = 50 full moves
 
     def calc_moves(self, piece, row, col, bool=True):
         def pawn_moves():
@@ -508,7 +528,7 @@ class Board:
         fen += " "
         
         # Halfmove clock and fullmove number
-        fen += "0 1"
+        fen += f"{self.halfmove_clock} {self.fullmove_number}"
         return fen
     
     def from_fen(self, fen):

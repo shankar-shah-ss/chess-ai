@@ -2,6 +2,7 @@
 import pygame
 import sys
 import os
+import datetime
 
 from const import *
 from game import Game
@@ -198,13 +199,6 @@ class Main:
             
             depth_value = settings_font.render(str(game.depth), True, (129, 182, 76))
             screen.blit(depth_value, (panel_x + 200, panel_y + 70))
-            
-            # Show configuration status with animation
-            if hasattr(game, 'config_thread') and game.config_thread and game.config_thread.is_alive():
-                # Animated dots for visual feedback
-                dots = "." * (int(pygame.time.get_ticks() / 300) % 4)
-                config_status = settings_font.render(f"Configuring{dots}", True, (255, 193, 7))
-                screen.blit(config_status, (panel_x + 250, panel_y + 70))
         
         # Current player indicator with visual circle
         player_font = pygame.font.SysFont('Segoe UI', 14, bold=True)
@@ -220,68 +214,19 @@ class Main:
         player_surface = player_font.render(player_text, True, (255, 255, 255))
         screen.blit(player_surface, (panel_x + 90, panel_y + 100))
         
-        # Evaluation display with bar
-        with game.evaluation_lock:
-            if game.evaluation and 'type' in game.evaluation and 'value' in game.evaluation:
-                eval_font = pygame.font.SysFont('Segoe UI', 13)
-                eval_type = game.evaluation['type']
-                value = game.evaluation['value']
-                
-                eval_label = eval_font.render("Eval:", True, (181, 181, 181))
-                screen.blit(eval_label, (panel_x + 20, panel_y + 130))
-                
-                if eval_type == 'cp':
-                    score = value / 100.0
-                    eval_text = f"{score:+.2f}"
-                    eval_color = (129, 182, 76) if score > 0 else (242, 113, 102) if score < -0.5 else (181, 181, 181)
-                    
-                    # Evaluation bar
-                    bar_width = 120
-                    bar_height = 6
-                    bar_x = panel_x + 70
-                    bar_y = panel_y + 135
-                    
-                    # Background bar
-                    pygame.draw.rect(screen, (60, 60, 60), (bar_x, bar_y, bar_width, bar_height), border_radius=3)
-                    
-                    # Fill bar based on evaluation
-                    normalized_score = max(-2, min(2, score))  # Clamp between -2 and +2
-                    fill_position = (normalized_score + 2) / 4  # Normalize to 0-1
-                    fill_width = int(bar_width * fill_position)
-                    
-                    fill_color = (129, 182, 76) if score > 0 else (242, 113, 102)
-                    if fill_width > 0:
-                        pygame.draw.rect(screen, fill_color, (bar_x, bar_y, fill_width, bar_height), border_radius=3)
-                    
-                else:  # mate
-                    moves_to_mate = abs(value)
-                    side = 'W' if value > 0 else 'B'
-                    eval_text = f"M{moves_to_mate} {side}"
-                    eval_color = (129, 182, 76) if value > 0 else (242, 113, 102)
-                
-                eval_surface = eval_font.render(eval_text, True, eval_color)
-                screen.blit(eval_surface, (panel_x + 200, panel_y + 130))
-        
-        # Game progress
-        moves_recorded = len(analysis_manager.analyzer.game_moves)
-        if moves_recorded > 0:
-            progress_font = pygame.font.SysFont('Segoe UI', 12)
-            progress_text = f"Moves recorded: {moves_recorded}"
-            progress_surface = progress_font.render(progress_text, True, (181, 181, 181))
-            screen.blit(progress_surface, (panel_x + 20, panel_y + 160))
-        
         # Controls info
         controls_font = pygame.font.SysFont('Segoe UI', 11)
         controls = [
             "Press 'A' for Analysis",
-            "Press 'S' for Summary"
+            "Press 'M' for Move Display",
+            "Press 'P' to Export PGN"
         ]
         
         y_offset = 180
         for control in controls:
             control_surface = controls_font.render(control, True, (129, 182, 76))
             screen.blit(control_surface, (panel_x + 20, panel_y + y_offset))
-            y_offset += 18
+            y_offset += 16
 
     def _render_game_over_overlay(self, screen, game):
         """Render modern game over overlay"""
@@ -316,11 +261,8 @@ class Main:
             result_color = (181, 181, 181)
             
         result_surface = result_font.render(result_text, True, result_color)
-        result_rect = result_surface.get_rect(center=(panel_x + panel_width // 2, panel_y + 60))
+        result_rect = result_surface.get_rect(center=(panel_x + panel_width // 2, panel_y + 50))
         screen.blit(result_surface, result_rect)
-        
-        # Separator line
-        pygame.draw.line(screen, (84, 92, 108), (panel_x + 50, panel_y + 100), (panel_x + panel_width - 50, panel_y + 100), 2)
         
         # Options with modern styling
         options_font = pygame.font.SysFont('Segoe UI', 16)
@@ -356,6 +298,12 @@ class Main:
         """Handle game events with modern controls"""
         # Mouse click
         if event.type == pygame.MOUSEBUTTONDOWN:
+            # Check move display click first
+            move_clicked = game.move_display.handle_click(event.pos)
+            if move_clicked is not None:
+                # Could implement jump to move functionality here
+                return True
+            
             if (game.next_player == 'white' and game.engine_white) or \
                (game.next_player == 'black' and game.engine_black):
                 return True
@@ -388,6 +336,11 @@ class Main:
             else:
                 game.hovered_sqr = None
             return True
+        
+        # Mouse wheel (for move display scrolling)
+        elif event.type == pygame.MOUSEWHEEL:
+            if game.move_display.handle_scroll(event):
+                return True
         
         # Mouse release
         elif event.type == pygame.MOUSEBUTTONUP:
@@ -458,10 +411,21 @@ class Main:
             elif event.key == pygame.K_s:
                 if analysis_manager.is_analysis_complete():
                     analysis_manager.toggle_summary()
+            
+            # Notation controls
+            elif event.key == pygame.K_m:
+                game.move_display.toggle_visibility()
+            elif event.key == pygame.K_p:
+                # Export PGN
+                filename = f"game_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pgn"
+                if game.export_pgn(filename):
+                    print(f"Game exported to {filename}")
                     
             # UI controls
             elif event.key == pygame.K_i:
                 self.show_game_info = not self.show_game_info
+            elif event.key == pygame.K_h:
+                game.move_display.toggle_visibility()
             elif event.key == pygame.K_F11:
                 self._toggle_fullscreen()
                 
@@ -527,9 +491,10 @@ class Main:
         
         instructions = [
             "Game Modes: 1 (Human vs Human) | 2 (Human vs Engine) | 3 (Engine vs Engine)",
-            "Engine: E/D (Toggle) | ↑/↓ (Depth) | ←/→ (Level) | +/- (Quick Level) [Non-blocking]",
+            "Engine: E/D (Toggle) | ↑/↓ (Depth) | ←/→ (Level) | +/- (Quick Level)",
             "Analysis: A (Enter Analysis) | S (Summary) | ESC (Exit Analysis)",
-            "Other: T (Theme) | R (Reset) | I (Info Panel) | F11 (Fullscreen)"
+            "Notation: M (Toggle Move Display) | P (Export PGN) | Mouse Wheel (Scroll Moves)",
+            "Other: T (Theme) | R (Reset) | I (Info Panel) | H (Move History) | F11 (Fullscreen)"
         ]
         
         y_offset = panel_y + 30
@@ -559,5 +524,7 @@ class Main:
 
 if __name__ == "__main__":
     main = Main()
+    # Show the startup screen
     main.show_startup_screen()
+    # Start the main game loop
     main.mainloop()

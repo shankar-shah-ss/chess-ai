@@ -10,23 +10,35 @@ from config import Config
 from square import Square
 from engine import ChessEngine
 from move import Move
-from piece import King
+from piece import King, Pawn
+from notation import ChessNotation
+from pgn_manager import PGNManager
+from move_display import MoveDisplay
 
 class EngineWorker(Thread):
-    def __init__(self, game, fen, move_queue):
+    def __init__(self, game, fen, move_queue, engine=None):
         super().__init__()
         self.game = game
         self.fen = fen
         self.move_queue = move_queue
+        self.engine = engine or game.engine  # Use specific engine or fallback
         self.daemon = True
 
     def run(self):
         try:
+            # Validate FEN before using
+            if not self.fen or len(self.fen.strip()) == 0:
+                print("Invalid FEN provided to engine worker")
+                return
+                
             # Get best move from engine
-            self.game.engine.set_position(self.fen)
-            uci_move = self.game.engine.get_best_move()
+            if not self.engine.set_position(self.fen):
+                print("Failed to set position in engine worker")
+                return
+                
+            uci_move = self.engine.get_best_move()
             
-            if uci_move:
+            if uci_move and len(uci_move) >= 4:
                 col_map = {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7}
                 try:
                     from_col = col_map[uci_move[0]]
@@ -34,29 +46,53 @@ class EngineWorker(Thread):
                     to_col = col_map[uci_move[2]]
                     to_row = 8 - int(uci_move[3])
                     
-                    initial = Square(from_row, from_col)
-                    final = Square(to_row, to_col)
-                    self.move_queue.put(Move(initial, final))
-                except (KeyError, ValueError, IndexError):
-                    pass
+                    # Validate coordinates
+                    if (0 <= from_row < 8 and 0 <= from_col < 8 and 
+                        0 <= to_row < 8 and 0 <= to_col < 8):
+                        initial = Square(from_row, from_col)
+                        final = Square(to_row, to_col)
+                        self.move_queue.put(Move(initial, final))
+                    else:
+                        print(f"Invalid move coordinates: {uci_move}")
+                except (KeyError, ValueError, IndexError) as e:
+                    print(f"Error parsing UCI move {uci_move}: {e}")
+            else:
+                print(f"Invalid UCI move received: {uci_move}")
         except Exception as e:
             print(f"Engine worker error: {e}")
+            import traceback
+            traceback.print_exc()
 
 class EvaluationWorker(Thread):
-    def __init__(self, game, fen):
+    def __init__(self, game, fen, engine=None):
         super().__init__()
         self.game = game
         self.fen = fen
+        self.engine = engine or game.engine  # Use specific engine or fallback
         self.evaluation = None
         self.daemon = True
 
     def run(self):
         try:
+            # Validate FEN before using
+            if not self.fen or len(self.fen.strip()) == 0:
+                print("Invalid FEN provided to evaluation worker")
+                self.evaluation = None
+                return
+                
             # Get evaluation from engine
-            self.game.engine.set_position(self.fen)
-            self.evaluation = self.game.engine.get_evaluation()
+            if not self.engine.set_position(self.fen):
+                print("Failed to set position in evaluation worker")
+                self.evaluation = None
+                return
+                
+            self.evaluation = self.engine.get_evaluation()
+            if self.evaluation is None:
+                print("Engine returned None evaluation")
         except Exception as e:
             print(f"Evaluation worker error: {e}")
+            import traceback
+            traceback.print_exc()
             self.evaluation = None
 
 class EngineConfigWorker(Thread):
@@ -89,11 +125,17 @@ class EngineConfigWorker(Thread):
                 return
                 
             if self.config_type == 'depth':
-                self.game.engine.set_depth(self.value)
-                print(f"✓ Engine depth set to {self.value}")
+                if self.game.engine_white_instance:
+                    self.game.engine_white_instance.set_depth(self.value)
+                if self.game.engine_black_instance:
+                    self.game.engine_black_instance.set_depth(self.value)
+                print(f"✓ Both engines depth set to {self.value}")
             elif self.config_type == 'level':
-                self.game.engine.set_skill_level(self.value)
-                print(f"✓ Engine skill level set to {self.value}")
+                if self.game.engine_white_instance:
+                    self.game.engine_white_instance.set_skill_level(self.value)
+                if self.game.engine_black_instance:
+                    self.game.engine_black_instance.set_skill_level(self.value)
+                print(f"✓ Both engines skill level set to {self.value}")
         except Exception as e:
             print(f"Engine config worker error: {e}")
 
@@ -105,10 +147,27 @@ class Game:
         self.dragger = Dragger()
         self.config = Config()
         
+        # Notation systems
+        self.notation = ChessNotation(self.board)
+        self.pgn_manager = PGNManager(self.board)
+        self.move_display = MoveDisplay(self.config, self.board)
+        
         # Engine controls
         self.engine_white = False
         self.engine_black = False
-        self.engine = ChessEngine()
+        
+        # Create separate engines for white and black
+        try:
+            self.engine_white_instance = ChessEngine()
+            self.engine_black_instance = ChessEngine()
+            self.engine = self.engine_white_instance  # Default for compatibility
+            print("✓ Chess engines initialized successfully")
+        except Exception as e:
+            print(f"✗ Failed to initialize chess engines: {e}")
+            self.engine_white_instance = None
+            self.engine_black_instance = None
+            self.engine = None
+        
         self.depth = 15
         self.level = 10
         self.game_mode = 0
@@ -120,6 +179,9 @@ class Game:
         self.winner = None
         self.check_alert = None
         self.move_history = []  # Track move history for analysis
+        self.draw_offered = False  # Track if a draw has been offered
+        self.draw_offer_by = None  # Track who offered the draw
+        self.draw_accepted = False  # Track if draw was accepted by mutual agreement
         
         # Analysis manager (will be set by main)
         self.analysis_manager = None
@@ -151,6 +213,13 @@ class Game:
     def set_analysis_manager(self, analysis_manager):
         """Set the analysis manager"""
         self.analysis_manager = analysis_manager
+    
+    def _get_engine_for_player(self, player):
+        """Get the correct engine instance for the given player"""
+        if player == 'white':
+            return self.engine_white_instance
+        else:
+            return self.engine_black_instance
 
     # Board rendering methods
     def show_bg(self, surface):
@@ -180,6 +249,9 @@ class Game:
         # Display game info only if not in analysis mode
         if not (self.analysis_manager and self.analysis_manager.active):
             self._render_game_status(surface)
+            
+        # Render move display (also hidden during analysis)
+        self.move_display.render(surface, self.analysis_manager and self.analysis_manager.active)
 
     def _render_game_status(self, surface):
         """Render game status information"""
@@ -348,6 +420,10 @@ class Game:
         # Use threaded methods to restore engine settings
         self.set_engine_level(current_level)
         self.set_engine_depth(current_depth)
+        
+        # Reset notation systems
+        self.pgn_manager.reset()
+        self.move_display.clear_history()
 
     # Engine control methods
     def toggle_engine(self, color):
@@ -367,6 +443,9 @@ class Game:
 
     def set_engine_depth(self, depth):
         """Set engine search depth (threaded to prevent UI freezing)"""
+        if not self.engine_white_instance or not self.engine_black_instance:
+            return
+            
         self.depth = max(1, min(20, depth))
         
         # Stop any existing config thread
@@ -374,11 +453,17 @@ class Game:
             self.config_thread.stop()
             
         # Start new config thread
-        self.config_thread = EngineConfigWorker(self, 'depth', self.depth)
-        self.config_thread.start()
+        try:
+            self.config_thread = EngineConfigWorker(self, 'depth', self.depth)
+            self.config_thread.start()
+        except Exception as e:
+            print(f"Error setting engine depth: {e}")
 
     def set_engine_level(self, level):
         """Set engine skill level (threaded to prevent UI freezing)"""
+        if not self.engine_white_instance or not self.engine_black_instance:
+            return
+            
         self.level = max(0, min(20, level))
         
         # Stop any existing config thread
@@ -386,8 +471,11 @@ class Game:
             self.config_thread.stop()
             
         # Start new config thread
-        self.config_thread = EngineConfigWorker(self, 'level', self.level)
-        self.config_thread.start()
+        try:
+            self.config_thread = EngineConfigWorker(self, 'level', self.level)
+            self.config_thread.start()
+        except Exception as e:
+            print(f"Error setting engine level: {e}")
 
     def increase_level(self):
         """Increase engine level"""
@@ -399,14 +487,24 @@ class Game:
 
     def schedule_evaluation(self):
         """Schedule position evaluation (throttled)"""
+        # Use white engine for evaluation (doesn't matter which one)
+        if not self.engine_white_instance:
+            return
+            
         current_time = time.time()
         if (not self.evaluation_thread and 
             current_time - self.last_evaluation_time > self.evaluation_interval):
             
-            fen = self.board.to_fen(self.next_player)
-            self.evaluation_thread = EvaluationWorker(self, fen)
-            self.evaluation_thread.start()
-            self.last_evaluation_time = current_time
+            try:
+                fen = self.board.to_fen(self.next_player)
+                if fen and len(fen.strip()) > 0:
+                    self.evaluation_thread = EvaluationWorker(self, fen, self.engine_white_instance)
+                    self.evaluation_thread.start()
+                    self.last_evaluation_time = current_time
+                else:
+                    print("Invalid FEN generated, cannot schedule evaluation")
+            except Exception as e:
+                print(f"Error scheduling evaluation: {e}")
 
     def make_engine_move(self):
         """Process engine move from queue"""
@@ -433,9 +531,20 @@ class Game:
     def schedule_engine_move(self):
         """Schedule engine to calculate next move"""
         if not self.engine_thread and not self.game_over:
-            fen = self.board.to_fen(self.next_player)
-            self.engine_thread = EngineWorker(self, fen, self.engine_move_queue)
-            self.engine_thread.start()
+            # Get the correct engine for current player
+            current_engine = self._get_engine_for_player(self.next_player)
+            if not current_engine:
+                return
+                
+            try:
+                fen = self.board.to_fen(self.next_player)
+                if fen and len(fen.strip()) > 0:
+                    self.engine_thread = EngineWorker(self, fen, self.engine_move_queue, current_engine)
+                    self.engine_thread.start()
+                else:
+                    print("Invalid FEN generated, cannot schedule engine move")
+            except Exception as e:
+                print(f"Error scheduling engine move: {e}")
             
     def check_game_state(self):
         """Check for game over conditions"""
@@ -469,6 +578,12 @@ class Game:
             self.winner = None
             return
             
+        # Check for fifty-move rule
+        if self.board.is_fifty_move_rule():
+            self.game_over = True
+            self.winner = None
+            return
+            
         # Check for insufficient material
         if self._is_insufficient_material():
             self.game_over = True
@@ -479,55 +594,146 @@ class Game:
         # Count pieces for both sides
         white_pieces = []
         black_pieces = []
+        white_bishops = []
+        black_bishops = []
         
         for row in range(ROWS):
             for col in range(COLS):
                 piece = self.board.squares[row][col].piece
                 if piece:
                     if piece.color == 'white':
-                        white_pieces.append(piece.name.lower())
+                        if piece.name.lower() != 'king':
+                            white_pieces.append(piece.name.lower())
+                            if piece.name.lower() == 'bishop':
+                                # Track bishop square color (light or dark)
+                                square_color = 'light' if (row + col) % 2 == 0 else 'dark'
+                                white_bishops.append(square_color)
                     else:
-                        black_pieces.append(piece.name.lower())
-        
-        # Remove kings from count
-        white_pieces = [p for p in white_pieces if p != 'king']
-        black_pieces = [p for p in black_pieces if p != 'king']
+                        if piece.name.lower() != 'king':
+                            black_pieces.append(piece.name.lower())
+                            if piece.name.lower() == 'bishop':
+                                # Track bishop square color (light or dark)
+                                square_color = 'light' if (row + col) % 2 == 0 else 'dark'
+                                black_bishops.append(square_color)
         
         # King vs King
         if not white_pieces and not black_pieces:
             return True
             
-        # King and Bishop/Knight vs King
-        if (len(white_pieces) == 1 and not black_pieces and 
-            white_pieces[0] in ['bishop', 'knight']):
+        # King and Bishop vs King
+        if (len(white_pieces) == 1 and not black_pieces and white_pieces[0] == 'bishop'):
+            return True
+        if (len(black_pieces) == 1 and not white_pieces and black_pieces[0] == 'bishop'):
             return True
             
-        if (len(black_pieces) == 1 and not white_pieces and 
-            black_pieces[0] in ['bishop', 'knight']):
+        # King and Knight vs King
+        if (len(white_pieces) == 1 and not black_pieces and white_pieces[0] == 'knight'):
+            return True
+        if (len(black_pieces) == 1 and not white_pieces and black_pieces[0] == 'knight'):
             return True
             
+        # King and Bishop vs King and Bishop (same color squares)
+        if (len(white_pieces) == 1 and len(black_pieces) == 1 and 
+            white_pieces[0] == 'bishop' and black_pieces[0] == 'bishop'):
+            if white_bishops[0] == black_bishops[0]:  # Same color squares
+                return True
+                
+        return False
+    
+    def offer_draw(self, player):
+        """Offer a draw by the specified player"""
+        if not self.game_over:
+            self.draw_offered = True
+            self.draw_offer_by = player
+            return True
+        return False
+    
+    def accept_draw(self):
+        """Accept the draw offer"""
+        if self.draw_offered:
+            self.game_over = True
+            self.winner = None  # Draw
+            self.draw_offered = False
+            self.draw_offer_by = None
+            self.draw_accepted = True  # Flag for mutual agreement
+            return True
+        return False
+    
+    def decline_draw(self):
+        """Decline the draw offer"""
+        self.draw_offered = False
+        self.draw_offer_by = None
+        return True
+    
+    def can_claim_draw(self):
+        """Check if current player can claim a draw (threefold repetition or fifty-move rule)"""
+        return self.board.is_threefold_repetition() or self.board.is_fifty_move_rule()
+    
+    def claim_draw(self):
+        """Claim a draw based on rules (threefold repetition or fifty-move rule)"""
+        if self.can_claim_draw():
+            self.game_over = True
+            self.winner = None
+            return True
         return False
             
     def make_move(self, piece, move):
         """Make a move and record it for analysis"""
+        # Check for special conditions before move
+        captured = self.board.squares[move.final.row][move.final.col].has_piece()
+        is_en_passant = (isinstance(piece, Pawn) and 
+                        abs(move.initial.col - move.final.col) == 1 and 
+                        self.board.squares[move.final.row][move.final.col].isempty() and
+                        self.board.en_passant_target)
+        captured = captured or is_en_passant
+        
+        # Get evaluation before move (if available)
+        eval_before = self.evaluation.copy() if self.evaluation else None
+        
         # Record position before move for analysis
         if self.analysis_manager:
             position_before = self.board.to_fen(piece.color)
             self.analysis_manager.record_move(move, piece.color, position_before)
         
+        # Make the actual move
+        self.board.move(piece, move)
+        
+        # Check for check/checkmate after move
+        opponent_color = 'black' if piece.color == 'white' else 'white'
+        is_check = self.board.is_king_in_check(opponent_color)
+        is_checkmate = self.board.is_checkmate(opponent_color) if is_check else False
+        
+        # Get evaluation after move (if available)
+        eval_after = None
+        if self.evaluation:
+            # Schedule new evaluation
+            self.schedule_evaluation()
+            eval_after = self.evaluation.copy()
+        
+        # Record move in PGN
+        algebraic_notation = self.pgn_manager.add_move(
+            move, piece, captured, is_check, is_checkmate
+        )
+        
+        # Add to move display
+        self.move_display.add_move(
+            move, piece, captured, is_check, is_checkmate,
+            eval_before=eval_before, eval_after=eval_after
+        )
+        
         # Record move in history
-        move_notation = self._get_move_notation(move, piece)
         self.move_history.append({
             'move': move,
             'piece': piece.name,
             'color': piece.color,
-            'notation': move_notation,
-            'captured': self.board.squares[move.final.row][move.final.col].has_piece()
+            'notation': algebraic_notation,
+            'captured': captured
         })
         
-        # Make the actual move
-        captured = self.board.squares[move.final.row][move.final.col].has_piece()
-        self.board.move(piece, move)
+        # Clear any pending draw offer (draw offers expire after a move)
+        self.draw_offered = False
+        self.draw_offer_by = None
+        
         self.play_sound(captured)
         self.next_turn()
         self.check_game_state()
@@ -583,6 +789,40 @@ class Game:
             surface.blit(instruction_surface, instruction_rect)
             y_offset += 35
 
+    def export_pgn(self, filename, include_analysis=False):
+        """Export game to PGN file"""
+        # Set game result based on current state
+        if self.game_over:
+            if self.winner == 'white':
+                self.pgn_manager.set_result('1-0')
+            elif self.winner == 'black':
+                self.pgn_manager.set_result('0-1')
+            else:
+                self.pgn_manager.set_result('1/2-1/2')
+        
+        # Set player names based on game mode
+        if self.game_mode == 0:  # Human vs Human
+            self.pgn_manager.set_game_info(White='Human', Black='Human')
+        elif self.game_mode == 1:  # Human vs Engine
+            self.pgn_manager.set_game_info(White='Human', Black='Engine')
+        elif self.game_mode == 2:  # Engine vs Engine
+            self.pgn_manager.set_game_info(White='Engine', Black='Engine')
+        
+        # Get analysis data if requested
+        analysis_data = None
+        if include_analysis and self.analysis_manager:
+            analysis_data = self.analysis_manager.get_analysis_stats()
+        
+        return self.pgn_manager.save_to_file(filename, include_analysis, analysis_data)
+    
+    def import_pgn(self, filename):
+        """Import game from PGN file"""
+        return self.pgn_manager.load_from_file(filename)
+    
+    def get_current_pgn(self):
+        """Get current game as PGN string"""
+        return self.pgn_manager.get_pgn_string()
+    
     def cleanup(self):
         """Clean up resources"""
         # Wait for threads to complete
