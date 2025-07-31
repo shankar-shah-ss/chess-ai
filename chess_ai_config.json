@@ -11,7 +11,7 @@
     "window_width": 900,
     "window_height": 900,
     "fullscreen": false,
-    "theme_index": 0,
+    "theme_index": 1,
     "show_coordinates": true,
     "show_move_history": true,
     "show_evaluation_bar": true,

@@ -1,8 +1,10 @@
-# analysis_manager.py - Updated with consolidated interface
+# analysis_manager.py - Updated with unified interface and enhanced features
 import pygame
 from enhanced_analysis import EnhancedGameAnalyzer
-from enhanced_analysis_screen import EnhancedAnalysisScreen
+from unified_analysis_interface import UnifiedAnalysisInterface
 from game_summary import GameSummaryWidget
+from error_handling import safe_execute, logger
+from resource_manager import resource_manager
 
 class AnalysisManager:
     def __init__(self, config, engine):
@@ -14,7 +16,7 @@ class AnalysisManager:
         self.opening_db = OpeningDatabase()
         
         self.analyzer = EnhancedGameAnalyzer(engine)
-        self.analysis_interface = EnhancedAnalysisScreen(config, self.opening_db)
+        self.analysis_interface = UnifiedAnalysisInterface(config, self.opening_db)
         self.summary_widget = GameSummaryWidget(config)
         
         # Connect components
@@ -39,24 +41,24 @@ class AnalysisManager:
         # UI state
         self.show_controls_help = False
         
+    @safe_execute(fallback_value=None, context="record_move")
     def record_move(self, move, player, position):
         """Record a move for analysis"""
         if not self.active:
             self.analyzer.record_move(move, player, position)
             
+    @safe_execute(fallback_value=False, context="start_analysis", retry_count=2)
     def start_analysis(self):
         """Start the analysis process"""
-        try:
-            if not self.analysis_started and len(self.analyzer.game_moves) > 0:
-                # Check if engine is healthy before starting
-                if not self.engine or not hasattr(self.engine, '_is_healthy') or not self.engine._is_healthy:
-                    print("Engine not healthy, cannot start analysis")
-                    return False
-                    
-                self.analysis_started = True
-                return self.analyzer.start_analysis()
-        except Exception as e:
-            print(f"Error starting analysis: {e}")
+        if not self.analysis_started and len(self.analyzer.game_moves) > 0:
+            # Check if engine is healthy before starting
+            if not self.engine or not hasattr(self.engine, '_is_healthy') or not self.engine._is_healthy:
+                logger.warning("Engine not healthy, cannot start analysis")
+                return False
+                
+            self.analysis_started = True
+            logger.info("Starting game analysis...")
+            return self.analyzer.start_analysis()
         return False
         
     def enter_analysis_mode(self, initial_fen=None):

@@ -1,4 +1,4 @@
-# config_manager.py - Centralized configuration management
+# config_manager.py - Enhanced centralized configuration management
 import json
 import os
 import pygame
@@ -7,6 +7,8 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from sound import Sound
 from theme import Theme
+from config_validator import config_validator
+from error_handling import safe_execute, logger
 
 @dataclass
 class EngineConfig:
@@ -87,12 +89,22 @@ class ConfigManager:
         # Load sounds after config is loaded
         self._load_sounds()
         
+    @safe_execute(fallback_value=None, context="config_load")
     def load_config(self):
-        """Load configuration from file"""
+        """Load and validate configuration from file"""
         if self.config_file.exists():
             try:
                 with open(self.config_file, 'r') as f:
                     data = json.load(f)
+                
+                # Validate configuration
+                if not config_validator.validate_config(data):
+                    logger.warning("Configuration validation failed, attempting to fix...")
+                    data = config_validator.fix_config(data)
+                    
+                    # Save fixed configuration
+                    self._save_config_data(data)
+                    logger.info("Configuration has been fixed and saved")
                     
                 # Update configurations
                 if 'engine' in data:
@@ -132,6 +144,15 @@ class ConfigManager:
             print(f"Configuration saved to {self.config_file}")
         except Exception as e:
             print(f"Error saving config: {e}")
+    
+    def _save_config_data(self, data: Dict[str, Any]):
+        """Save raw configuration data to file"""
+        try:
+            with open(self.config_file, 'w') as f:
+                json.dump(data, f, indent=2)
+            logger.info(f"Configuration data saved to {self.config_file}")
+        except Exception as e:
+            logger.error(f"Error saving config data: {e}")
             
     def create_default_config(self):
         """Create default configuration file"""

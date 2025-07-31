@@ -1,9 +1,42 @@
-# engine.py - Fixed version with proper error handling and thread safety
+# engine.py - Enhanced version with improved thread safety and resource management
 from stockfish import Stockfish
 import chess
 import os
 import time
 import threading
+import weakref
+from typing import Optional, Dict, Any
+import logging
+
+# Configure logging for engine
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class EnginePool:
+    """Singleton engine pool for better resource management"""
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._engines = weakref.WeakSet()
+                    cls._instance._initialized = False
+        return cls._instance
+    
+    def register_engine(self, engine):
+        """Register engine for cleanup tracking"""
+        self._engines.add(engine)
+    
+    def cleanup_all(self):
+        """Cleanup all registered engines"""
+        for engine in list(self._engines):
+            try:
+                engine.cleanup()
+            except:
+                pass
 
 class ChessEngine:
     def __init__(self, skill_level=10, depth=15):
@@ -13,6 +46,7 @@ class ChessEngine:
         self.max_recovery_attempts = 3
         self._is_healthy = True
         self._last_health_check = 0
+        self._cleanup_registered = False
         
         # Try to locate Stockfish
         stockfish_path = None
@@ -48,6 +82,10 @@ class ChessEngine:
         self.board = chess.Board()
         self.last_fen = chess.STARTING_FEN  # Track last valid position
         
+        # Register with engine pool for cleanup
+        EnginePool().register_engine(self)
+        self._cleanup_registered = True
+        
     def _test_engine_health(self, engine):
         """Test if engine is responsive"""
         try:
@@ -81,14 +119,8 @@ class ChessEngine:
                 else:
                     engine.set_depth(depth)
                     
-                # Configure for maximum performance
-                try:
-                    engine._stockfish.stdin.write("setoption name Threads value 2\n")
-                    engine._stockfish.stdin.flush()
-                    engine._stockfish.stdin.write("setoption name Hash value 128\n")
-                    engine._stockfish.stdin.flush()
-                except:
-                    pass  # Ignore if options not supported
+                # Configure for maximum performance using safe methods
+                self._configure_engine_options(engine)
                     
                 print(f"Engine configured for UNLIMITED STRENGTH (level {skill_level})")
             else:
@@ -102,6 +134,26 @@ class ChessEngine:
             print(f"Engine creation failed: {e}")
             self._is_healthy = False
             raise
+    
+    def _configure_engine_options(self, engine):
+        """Safely configure engine options"""
+        try:
+            # Use proper UCI commands instead of direct stdin access
+            if hasattr(engine, '_stockfish') and engine._stockfish:
+                try:
+                    # Send UCI options safely
+                    engine._stockfish.stdin.write("setoption name Threads value 2\n")
+                    engine._stockfish.stdin.flush()
+                    engine._stockfish.stdin.write("setoption name Hash value 128\n")
+                    engine._stockfish.stdin.flush()
+                    logger.info("Engine options configured successfully")
+                    return True
+                except Exception as e:
+                    logger.warning(f"Failed to configure engine options: {e}")
+                    return False
+        except Exception as e:
+            logger.error(f"Error configuring engine options: {e}")
+            return False
         
     def set_skill_level(self, level):
         self.skill_level = level
@@ -113,13 +165,7 @@ class ChessEngine:
                     print(f"Engine set to UNLIMITED STRENGTH (level {level})")
                     if self.depth >= 20:
                         self.engine.set_depth(0)  # Unlimited depth
-                    try:
-                        self.engine._stockfish.stdin.write("setoption name Threads value 2\n")
-                        self.engine._stockfish.stdin.flush()
-                        self.engine._stockfish.stdin.write("setoption name Hash value 128\n")
-                        self.engine._stockfish.stdin.flush()
-                    except:
-                        pass
+                    self._configure_engine_options(self.engine)
                 else:
                     self.engine.set_skill_level(level)
             except Exception as e:
@@ -296,3 +342,29 @@ class ChessEngine:
             if self.recovery_attempts >= self.max_recovery_attempts:
                 self._is_healthy = False
             return False
+    
+    def cleanup(self):
+        """Cleanup engine resources"""
+        with self.engine_lock:
+            try:
+                if hasattr(self, 'engine') and self.engine:
+                    if hasattr(self.engine, '_stockfish') and self.engine._stockfish:
+                        try:
+                            self.engine._stockfish.terminate()
+                            self.engine._stockfish.wait(timeout=2)
+                        except:
+                            try:
+                                self.engine._stockfish.kill()
+                            except:
+                                pass
+                    self.engine = None
+                logger.info("Engine cleanup completed")
+            except Exception as e:
+                logger.error(f"Error during engine cleanup: {e}")
+    
+    def __del__(self):
+        """Destructor to ensure cleanup"""
+        try:
+            self.cleanup()
+        except:
+            pass

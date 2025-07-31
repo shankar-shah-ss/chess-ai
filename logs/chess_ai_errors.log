@@ -1,0 +1,6 @@
+2025-07-31 23:26:47,049 - MainThread - ChessAI - [31mERROR[0m - wrapper:164 - Error in failing_function: Test error
+2025-07-31 23:26:48,098 - MainThread - ChessAI - [31mERROR[0m - validate_config:289 - Configuration validation failed: ['Missing required section: performance']
+2025-07-31 23:26:48,590 - MainThread - ChessAI - [31mERROR[0m - validate_config:289 - Configuration validation failed: ['Missing required section: performance']
+2025-07-31 23:46:19,246 - MainThread - ChessAI - [31mERROR[0m - validate_config:289 - Configuration validation failed: ['Missing required section: performance']
+2025-07-31 23:52:59,477 - MainThread - ChessAI - [31mERROR[0m - wrapper:163 - Error in failing_function: Test error
+2025-07-31 23:53:00,767 - MainThread - ChessAI - [31mERROR[0m - validate_config:289 - Configuration validation failed: ['Missing required section: performance']

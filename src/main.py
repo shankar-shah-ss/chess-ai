@@ -28,8 +28,15 @@ class Main:
         self.show_help = False
         self.initial_fen = None
         
-        # Cache fonts for better performance
-        self._font_cache = {}
+        # Enhanced resource management
+        from resource_manager import resource_manager
+        from error_handling import performance_monitor
+        self.resource_manager = resource_manager
+        self.performance_monitor = performance_monitor
+        
+        # Maintenance timing
+        self.last_maintenance = pygame.time.get_ticks()
+        self.maintenance_interval = 30000  # 30 seconds
 
     def mainloop(self):
         screen = self.screen
@@ -43,6 +50,12 @@ class Main:
 
         while True:
             self.clock.tick(120)  # Higher FPS for smoother experience
+            
+            # Periodic maintenance
+            current_time = pygame.time.get_ticks()
+            if current_time - self.last_maintenance > self.maintenance_interval:
+                self.game.periodic_maintenance()
+                self.last_maintenance = current_time
             
             # Process engine moves (highest priority)
             if hasattr(game, 'engine_thread') and game.engine_thread:
@@ -81,8 +94,7 @@ class Main:
                             if analysis_manager.is_analysis_complete():
                                 analysis_manager.toggle_summary()
                     elif event.type == pygame.QUIT:
-                        pygame.quit()
-                        sys.exit()
+                        self._cleanup_and_exit()
                 continue
 
             # Handle game over state
@@ -104,8 +116,7 @@ class Main:
                         elif event.key == pygame.K_F11:
                             self._toggle_fullscreen()
                     elif event.type == pygame.QUIT:
-                        pygame.quit()
-                        sys.exit()
+                        self._cleanup_and_exit()
                 continue
 
             # Schedule engine move if needed
@@ -332,15 +343,46 @@ class Main:
             print(f"Error resetting: {e}")
     
     def _get_cached_font(self, name, size, bold=False):
-        """Get cached font to improve performance"""
-        key = (name, size, bold)
-        if key not in self._font_cache:
-            self._font_cache[key] = pygame.font.SysFont(name, size, bold=bold)
-        return self._font_cache[key]
+        """Get cached font using resource manager"""
+        return self.resource_manager.get_font(name, size, bold)
     
     def _toggle_fullscreen(self):
         """Toggle fullscreen"""
         pygame.display.toggle_fullscreen()
+    
+    def _cleanup_and_exit(self):
+        """Cleanup resources and exit gracefully"""
+        try:
+            print("Cleaning up resources...")
+            
+            # Cleanup game resources
+            if hasattr(self, 'game'):
+                self.game.cleanup()
+            
+            # Cleanup analysis manager
+            if hasattr(self, 'analysis_manager'):
+                if hasattr(self.analysis_manager, 'cleanup'):
+                    self.analysis_manager.cleanup()
+            
+            # Cleanup resource manager
+            if hasattr(self, 'resource_manager'):
+                self.resource_manager.cleanup_all()
+            
+            # Cleanup thread manager
+            from thread_manager import thread_manager
+            thread_manager.cleanup_all()
+            
+            # Cleanup engine pool
+            from engine import EnginePool
+            EnginePool().cleanup_all()
+            
+            print("Cleanup completed successfully")
+            
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+        finally:
+            pygame.quit()
+            sys.exit()
     
     def _handle_game_event(self, event, game, board, dragger, analysis_manager):
         """Handle game events"""

@@ -1,4 +1,4 @@
-# game.py - Updated with Enhanced Analysis Integration
+# game.py - Enhanced with modern analysis integration and improved threading
 import pygame
 import time
 import queue
@@ -14,6 +14,9 @@ from piece import King, Pawn
 from notation import ChessNotation
 from pgn_manager import PGNManager
 from move_display import MoveDisplay
+from error_handling import safe_execute, validate_game_state, ErrorRecovery, monitor_performance
+from thread_manager import thread_manager, EngineWorkerThread, EvaluationWorkerThread
+from resource_manager import resource_manager
 
 class EngineWorker(Thread):
     def __init__(self, game, fen, move_queue, engine=None):
@@ -151,6 +154,10 @@ class Game:
         self.notation = ChessNotation(self.board)
         self.pgn_manager = PGNManager(self.board)
         self.move_display = MoveDisplay(self.config, self.board)
+        
+        # Enhanced error handling and monitoring
+        self._error_recovery = ErrorRecovery()
+        self._last_validation = time.time()
         
         # Engine controls
         self.engine_white = False
@@ -848,22 +855,124 @@ class Game:
         except:
             return False
     
+    @safe_execute(fallback_value=None, context="game_cleanup")
     def cleanup(self):
-        """Clean up resources"""
+        """Enhanced cleanup with proper resource management"""
         with self.thread_cleanup_lock:
-            # Wait for threads to complete
-            if self.engine_thread and self.engine_thread.is_alive():
-                self.engine_thread.join(timeout=1.0)
+            # Stop and cleanup threads using thread manager
+            if hasattr(self, 'engine_thread') and self.engine_thread:
+                if hasattr(self.engine_thread, 'stop'):
+                    self.engine_thread.stop()
+                if self.engine_thread.is_alive():
+                    self.engine_thread.join(timeout=2.0)
+                self.engine_thread = None
                 
-            if self.evaluation_thread and self.evaluation_thread.is_alive():
-                self.evaluation_thread.join(timeout=1.0)
+            if hasattr(self, 'evaluation_thread') and self.evaluation_thread:
+                if hasattr(self.evaluation_thread, 'stop'):
+                    self.evaluation_thread.stop()
+                if self.evaluation_thread.is_alive():
+                    self.evaluation_thread.join(timeout=2.0)
+                self.evaluation_thread = None
                 
-            if self.config_thread and self.config_thread.is_alive():
-                self.config_thread.join(timeout=1.0)
+            if hasattr(self, 'config_thread') and self.config_thread:
+                if hasattr(self.config_thread, 'stop'):
+                    self.config_thread.stop()
+                if self.config_thread.is_alive():
+                    self.config_thread.join(timeout=2.0)
+                self.config_thread = None
                 
-            # Clear queues
+            # Clear queues safely
             try:
-                while True:
+                while not self.engine_move_queue.empty():
                     self.engine_move_queue.get_nowait()
             except queue.Empty:
                 pass
+            
+            # Cleanup engines
+            if hasattr(self, 'engine_white_instance') and self.engine_white_instance:
+                self.engine_white_instance.cleanup()
+            if hasattr(self, 'engine_black_instance') and self.engine_black_instance:
+                self.engine_black_instance.cleanup()
+            
+            # Cleanup analysis manager
+            if hasattr(self, 'analysis_manager') and self.analysis_manager:
+                if hasattr(self.analysis_manager, 'cleanup'):
+                    self.analysis_manager.cleanup()
+    
+    @safe_execute(fallback_value=False, context="game_validation")
+    def validate_game_state(self):
+        """Enhanced game state validation"""
+        current_time = time.time()
+        
+        # Throttle validation checks
+        if current_time - self._last_validation < 1.0:
+            return True
+        
+        self._last_validation = current_time
+        
+        try:
+            # Validate board state
+            if not self.board or not hasattr(self.board, 'squares'):
+                return False
+            
+            # Check for kings
+            king_count = {'white': 0, 'black': 0}
+            for row in range(8):
+                for col in range(8):
+                    piece = self.board.squares[row][col].piece
+                    if piece and isinstance(piece, King):
+                        king_count[piece.color] += 1
+            
+            if king_count['white'] != 1 or king_count['black'] != 1:
+                return False
+            
+            # Validate current player
+            if self.next_player not in ['white', 'black']:
+                return False
+            
+            return True
+            
+        except Exception as e:
+            print(f"Game state validation error: {e}")
+            return False
+    
+    @monitor_performance()
+    def periodic_maintenance(self):
+        """Perform periodic maintenance tasks"""
+        try:
+            # Validate game state
+            if not self.validate_game_state():
+                print("Game state validation failed, attempting recovery...")
+                self._error_recovery.recover_game_state(self)
+            
+            # Check engine health
+            if hasattr(self, 'engine_white_instance') and self.engine_white_instance:
+                if not self.engine_white_instance._is_healthy:
+                    print("White engine unhealthy, attempting recovery...")
+                    self._error_recovery.recover_engine(self.engine_white_instance)
+            
+            if hasattr(self, 'engine_black_instance') and self.engine_black_instance:
+                if not self.engine_black_instance._is_healthy:
+                    print("Black engine unhealthy, attempting recovery...")
+                    self._error_recovery.recover_engine(self.engine_black_instance)
+            
+            # Cleanup resources if needed
+            stats = resource_manager.get_cache_stats()
+            total_cached = sum(stats.values())
+            if total_cached > 100:  # Arbitrary threshold
+                resource_manager.cleanup_cache("images")
+            
+            # Check thread count
+            thread_stats = thread_manager.get_stats()
+            if thread_stats['active_threads'] > 15:
+                thread_manager.cancel_all_tasks()
+                
+        except Exception as e:
+            print(f"Maintenance error: {e}")
+    
+    def __del__(self):
+        """Destructor to ensure cleanup"""
+        try:
+            self.cleanup()
+        except:
+            pass
