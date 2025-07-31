@@ -4,6 +4,12 @@ from notation import ChessNotation
 
 class MoveDisplay:
     def __init__(self, config, board):
+        # Ensure pygame font is initialized
+        if not pygame.get_init():
+            pygame.init()
+        if not pygame.font.get_init():
+            pygame.font.init()
+            
         self.config = config
         self.board = board
         self.notation = ChessNotation(board)

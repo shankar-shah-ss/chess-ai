@@ -6,7 +6,7 @@ from threading import Thread, Lock
 from const import *
 from board import Board
 from dragger import Dragger
-from config import Config
+from config_manager import config_manager
 from square import Square
 from engine import ChessEngine
 from move import Move
@@ -145,7 +145,7 @@ class Game:
         self.hovered_sqr = None
         self.board = Board()
         self.dragger = Dragger()
-        self.config = Config()
+        self.config = config_manager
         
         # Notation systems
         self.notation = ChessNotation(self.board)
@@ -157,6 +157,7 @@ class Game:
         self.engine_black = False
         
         # Create separate engines for white and black
+        self.engine_creation_lock = Lock()
         try:
             self.engine_white_instance = ChessEngine()
             self.engine_black_instance = ChessEngine()
@@ -186,15 +187,16 @@ class Game:
         # Analysis manager (will be set by main)
         self.analysis_manager = None
         
-        # Threading
+        # Threading with proper cleanup
         self.engine_thread = None
         self.evaluation_thread = None
         self.config_thread = None
-        self.engine_move_queue = queue.Queue()
+        self.engine_move_queue = queue.Queue(maxsize=10)  # Prevent unbounded growth
+        self.thread_cleanup_lock = Lock()
         
         # Performance tracking
         self.last_evaluation_time = 0
-        self.evaluation_interval = 0.5  # Minimum time between evaluations
+        self.evaluation_interval = 5.0  # Much longer interval for smoothness
 
     # Game mode methods
     def set_game_mode(self, mode):
@@ -216,10 +218,11 @@ class Game:
     
     def _get_engine_for_player(self, player):
         """Get the correct engine instance for the given player"""
-        if player == 'white':
-            return self.engine_white_instance
-        else:
-            return self.engine_black_instance
+        with self.engine_creation_lock:
+            if player == 'white':
+                return self.engine_white_instance if self.engine_white_instance and self.engine_white_instance._is_healthy else None
+            else:
+                return self.engine_black_instance if self.engine_black_instance and self.engine_black_instance._is_healthy else None
 
     # Board rendering methods
     def show_bg(self, surface):
@@ -443,39 +446,41 @@ class Game:
 
     def set_engine_depth(self, depth):
         """Set engine search depth (threaded to prevent UI freezing)"""
-        if not self.engine_white_instance or not self.engine_black_instance:
-            return
+        with self.engine_creation_lock:
+            if not self.engine_white_instance or not self.engine_black_instance:
+                return
+                
+            self.depth = max(1, min(20, depth))
             
-        self.depth = max(1, min(20, depth))
-        
-        # Stop any existing config thread
-        if self.config_thread and self.config_thread.is_alive():
-            self.config_thread.stop()
-            
-        # Start new config thread
-        try:
-            self.config_thread = EngineConfigWorker(self, 'depth', self.depth)
-            self.config_thread.start()
-        except Exception as e:
-            print(f"Error setting engine depth: {e}")
+            # Stop any existing config thread
+            if self.config_thread and self.config_thread.is_alive():
+                self.config_thread.stop()
+                
+            # Start new config thread
+            try:
+                self.config_thread = EngineConfigWorker(self, 'depth', self.depth)
+                self.config_thread.start()
+            except Exception as e:
+                print(f"Error setting engine depth: {e}")
 
     def set_engine_level(self, level):
         """Set engine skill level (threaded to prevent UI freezing)"""
-        if not self.engine_white_instance or not self.engine_black_instance:
-            return
+        with self.engine_creation_lock:
+            if not self.engine_white_instance or not self.engine_black_instance:
+                return
+                
+            self.level = max(0, min(20, level))
             
-        self.level = max(0, min(20, level))
-        
-        # Stop any existing config thread
-        if self.config_thread and self.config_thread.is_alive():
-            self.config_thread.stop()
-            
-        # Start new config thread
-        try:
-            self.config_thread = EngineConfigWorker(self, 'level', self.level)
-            self.config_thread.start()
-        except Exception as e:
-            print(f"Error setting engine level: {e}")
+            # Stop any existing config thread
+            if self.config_thread and self.config_thread.is_alive():
+                self.config_thread.stop()
+                
+            # Start new config thread
+            try:
+                self.config_thread = EngineConfigWorker(self, 'level', self.level)
+                self.config_thread.start()
+            except Exception as e:
+                print(f"Error setting engine level: {e}")
 
     def increase_level(self):
         """Increase engine level"""
@@ -487,8 +492,13 @@ class Game:
 
     def schedule_evaluation(self):
         """Schedule position evaluation (throttled)"""
+        # Skip evaluation in human vs human mode for maximum performance
+        if self.game_mode == 0:
+            return
+            
         # Use white engine for evaluation (doesn't matter which one)
-        if not self.engine_white_instance:
+        engine = self._get_engine_for_player('white')
+        if not engine:
             return
             
         current_time = time.time()
@@ -497,8 +507,8 @@ class Game:
             
             try:
                 fen = self.board.to_fen(self.next_player)
-                if fen and len(fen.strip()) > 0:
-                    self.evaluation_thread = EvaluationWorker(self, fen, self.engine_white_instance)
+                if fen and len(fen.strip()) > 0 and self._validate_fen(fen):
+                    self.evaluation_thread = EvaluationWorker(self, fen, engine)
                     self.evaluation_thread.start()
                     self.last_evaluation_time = current_time
                 else:
@@ -511,6 +521,9 @@ class Game:
         try:
             # Non-blocking get from queue
             move = self.engine_move_queue.get_nowait()
+            if not move or not hasattr(move, 'initial') or not hasattr(move, 'final'):
+                return False
+                
             piece = self.board.squares[move.initial.row][move.initial.col].piece
             
             if piece and piece.color == self.next_player:
@@ -519,32 +532,35 @@ class Game:
                 # Make the move
                 self.make_move(piece, move)
                 
-                self.engine_thread = None
+                with self.thread_cleanup_lock:
+                    self.engine_thread = None
                 return True
         except queue.Empty:
             return False
         except Exception as e:
             print(f"Error making engine move: {e}")
-            self.engine_thread = None
+            with self.thread_cleanup_lock:
+                self.engine_thread = None
             return False
 
     def schedule_engine_move(self):
         """Schedule engine to calculate next move"""
-        if not self.engine_thread and not self.game_over:
-            # Get the correct engine for current player
-            current_engine = self._get_engine_for_player(self.next_player)
-            if not current_engine:
-                return
-                
-            try:
-                fen = self.board.to_fen(self.next_player)
-                if fen and len(fen.strip()) > 0:
-                    self.engine_thread = EngineWorker(self, fen, self.engine_move_queue, current_engine)
-                    self.engine_thread.start()
-                else:
-                    print("Invalid FEN generated, cannot schedule engine move")
-            except Exception as e:
-                print(f"Error scheduling engine move: {e}")
+        with self.thread_cleanup_lock:
+            if not self.engine_thread and not self.game_over:
+                # Get the correct engine for current player
+                current_engine = self._get_engine_for_player(self.next_player)
+                if not current_engine:
+                    return
+                    
+                try:
+                    fen = self.board.to_fen(self.next_player)
+                    if fen and len(fen.strip()) > 0 and self._validate_fen(fen):
+                        self.engine_thread = EngineWorker(self, fen, self.engine_move_queue, current_engine)
+                        self.engine_thread.start()
+                    else:
+                        print("Invalid FEN generated, cannot schedule engine move")
+                except Exception as e:
+                    print(f"Error scheduling engine move: {e}")
             
     def check_game_state(self):
         """Check for game over conditions"""
@@ -823,18 +839,31 @@ class Game:
         """Get current game as PGN string"""
         return self.pgn_manager.get_pgn_string()
     
+    def _validate_fen(self, fen):
+        """Validate FEN string"""
+        try:
+            import chess
+            board = chess.Board(fen)
+            return board.is_valid()
+        except:
+            return False
+    
     def cleanup(self):
         """Clean up resources"""
-        # Wait for threads to complete
-        if self.engine_thread and self.engine_thread.is_alive():
-            self.engine_thread.join(timeout=1.0)
-            
-        if self.evaluation_thread and self.evaluation_thread.is_alive():
-            self.evaluation_thread.join(timeout=1.0)
-            
-        # Clear queues
-        try:
-            while True:
-                self.engine_move_queue.get_nowait()
-        except queue.Empty:
-            pass
+        with self.thread_cleanup_lock:
+            # Wait for threads to complete
+            if self.engine_thread and self.engine_thread.is_alive():
+                self.engine_thread.join(timeout=1.0)
+                
+            if self.evaluation_thread and self.evaluation_thread.is_alive():
+                self.evaluation_thread.join(timeout=1.0)
+                
+            if self.config_thread and self.config_thread.is_alive():
+                self.config_thread.join(timeout=1.0)
+                
+            # Clear queues
+            try:
+                while True:
+                    self.engine_move_queue.get_nowait()
+            except queue.Empty:
+                pass

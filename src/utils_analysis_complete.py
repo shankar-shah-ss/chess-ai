@@ -83,17 +83,13 @@ def classification_to_color(classification: str) -> Tuple[int, int, int]:
     }
     return color_map.get(classification, (108, 117, 125))
 
-def draw_classification_badge(surface: pygame.Surface, classification: str, x: int, y: int, 
-                            font: pygame.font.Font):
+def draw_classification_badge(surface, x, y, classification, color):
     """Draw a classification badge"""
-    color = classification_to_color(classification)
-    
     # Badge dimensions
     badge_width = 80
     badge_height = 24
     
     # Badge background
-    badge_rect = pygame.Rect(x, y, badge_width, badge_height)
     badge_surface = pygame.Surface((badge_width, badge_height), pygame.SRCALPHA)
     
     # Background with transparency
@@ -101,28 +97,26 @@ def draw_classification_badge(surface: pygame.Surface, classification: str, x: i
     pygame.draw.rect(badge_surface, color, pygame.Rect(0, 0, badge_width, badge_height), 1, border_radius=12)
     
     # Text
+    font = pygame.font.SysFont('Segoe UI', 12, bold=True)
     text_surface = font.render(classification.title(), True, color)
     text_rect = text_surface.get_rect(center=(badge_width//2, badge_height//2))
     badge_surface.blit(text_surface, text_rect)
     
     surface.blit(badge_surface, (x, y))
 
-def draw_progress_bar(surface: pygame.Surface, rect: pygame.Rect, progress: float, 
-                     bg_color: Tuple[int, int, int], fill_color: Tuple[int, int, int],
-                     border_color: Optional[Tuple[int, int, int]] = None):
-    """Draw a modern progress bar"""
+def draw_progress_bar(surface, x, y, width, height, progress):
+    """Draw a progress bar"""
     # Background
-    pygame.draw.rect(surface, bg_color, rect, border_radius=rect.height//2)
+    bg_color = (60, 60, 60)
+    rect = pygame.Rect(x, y, width, height)
+    pygame.draw.rect(surface, bg_color, rect, border_radius=height//2)
     
     # Fill
     if progress > 0:
-        fill_width = int(rect.width * progress)
-        fill_rect = pygame.Rect(rect.x, rect.y, fill_width, rect.height)
-        pygame.draw.rect(surface, fill_color, fill_rect, border_radius=rect.height//2)
-    
-    # Border
-    if border_color:
-        pygame.draw.rect(surface, border_color, rect, 1, border_radius=rect.height//2)
+        fill_color = (129, 182, 76)
+        fill_width = int(width * (progress / 100))
+        fill_rect = pygame.Rect(x, y, fill_width, height)
+        pygame.draw.rect(surface, fill_color, fill_rect, border_radius=height//2)
 
 def draw_evaluation_bar(surface: pygame.Surface, rect: pygame.Rect, evaluation: Dict,
                        white_color: Tuple[int, int, int] = (240, 240, 240),

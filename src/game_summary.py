@@ -2,6 +2,7 @@
 import pygame
 import math
 from typing import Optional, Dict, Any
+from utils_analysis_complete import get_accuracy_rating, draw_progress_bar
 
 class GameSummaryWidget:
     def __init__(self, config):

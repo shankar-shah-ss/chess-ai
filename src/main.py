@@ -2,14 +2,12 @@
 import pygame
 import sys
 import os
-import datetime
 
 from const import *
 from game import Game
 from square import Square
 from move import Move
 from analysis_manager import AnalysisManager
-from chess_com_analysis import ChessComAnalysis
 
 class Main:
     def __init__(self):
@@ -27,6 +25,11 @@ class Main:
         
         # UI state
         self.show_game_info = True
+        self.show_help = False
+        self.initial_fen = None
+        
+        # Cache fonts for better performance
+        self._font_cache = {}
 
     def mainloop(self):
         screen = self.screen
@@ -39,39 +42,31 @@ class Main:
         game.set_game_mode(0)  # Start with human vs human
 
         while True:
-            self.clock.tick(60)  # Limit to 60 FPS
+            self.clock.tick(120)  # Higher FPS for smoother experience
             
-            # Update analysis manager
-            analysis_manager.update()
-            
-            # Process engine moves from queue
-            if game.engine_thread:
+            # Process engine moves (highest priority)
+            if hasattr(game, 'engine_thread') and game.engine_thread:
                 if game.make_engine_move():
-                    # Force immediate redraw
                     self._render_game_state(screen, game, dragger, analysis_manager)
-                    pygame.display.update()
+                    pygame.display.flip()  # Faster than update()
+                    continue
 
-            # Check for completed evaluations
-            if game.evaluation_thread and not game.evaluation_thread.is_alive():
+            # Minimal evaluation processing
+            if hasattr(game, 'evaluation_thread') and game.evaluation_thread and not game.evaluation_thread.is_alive():
                 with game.evaluation_lock:
                     game.evaluation = game.evaluation_thread.evaluation
                 game.evaluation_thread = None
 
-            # Schedule evaluation if needed (not in analysis mode)
-            if not game.evaluation_thread and not analysis_manager.active:
-                game.schedule_evaluation()
-
             # Handle analysis mode rendering
             if analysis_manager.active:
-                # Render using the analysis manager (which uses AnalysisScreen)
+                # Render using the analysis manager
                 analysis_manager.render(screen)
-                pygame.display.update()
+                pygame.display.flip()
                     
                 # Process events for analysis mode
                 for event in pygame.event.get():
                     # Handle analysis manager input
                     if analysis_manager.handle_input(event):
-                        # If analysis was deactivated, we don't need to do anything special because the loop condition will break next time
                         continue
                         
                     # Handle global keys
@@ -94,7 +89,7 @@ class Main:
             if game.game_over:
                 self._render_game_state(screen, game, dragger, analysis_manager)
                 self._render_game_over_overlay(screen, game)
-                pygame.display.update()
+                pygame.display.flip()
                 
                 # Process events for restart
                 for event in pygame.event.get():
@@ -114,7 +109,7 @@ class Main:
                 continue
 
             # Schedule engine move if needed
-            if not dragger.dragging and not game.engine_thread:
+            if not dragger.dragging and (not hasattr(game, 'engine_thread') or not game.engine_thread):
                 if (game.next_player == 'white' and game.engine_white) or \
                    (game.next_player == 'black' and game.engine_black):
                     game.schedule_engine_move()
@@ -130,7 +125,7 @@ class Main:
                 if self._handle_game_event(event, game, board, dragger, analysis_manager):
                     continue
             
-            pygame.display.update()
+            pygame.display.flip()
 
     def _render_game_state(self, screen, game, dragger, analysis_manager):
         """Render the main game state with modern styling"""
@@ -144,12 +139,16 @@ class Main:
         # Show modern game info panel if not in analysis mode
         if not analysis_manager.active and self.show_game_info:
             self._render_modern_game_info(screen, game, analysis_manager)
+        
+        # Show help overlay if requested
+        if self.show_help:
+            self._render_help_overlay(screen)
 
     def _render_modern_game_info(self, screen, game, analysis_manager):
         """Render modern game information panel"""
         # Info panel background
         panel_width = 320
-        panel_height = 240
+        panel_height = 200
         panel_x = WIDTH - panel_width - 20
         panel_y = 20
         
@@ -165,12 +164,12 @@ class Main:
         screen.blit(panel_surface, (panel_x, panel_y))
 
         # Title
-        title_font = pygame.font.SysFont('Segoe UI', 18, bold=True)
+        title_font = self._get_cached_font('Segoe UI', 18, bold=True)
         title_surface = title_font.render("Game Status", True, (255, 255, 255))
         screen.blit(title_surface, (panel_x + 20, panel_y + 15))
 
         # Game mode section
-        mode_font = pygame.font.SysFont('Segoe UI', 14, bold=True)
+        mode_font = self._get_cached_font('Segoe UI', 14, bold=True)
         mode_text = {
             0: "Human vs Human",
             1: "Human vs Engine", 
@@ -180,13 +179,13 @@ class Main:
         mode_label = mode_font.render("Mode:", True, (181, 181, 181))
         screen.blit(mode_label, (panel_x + 20, panel_y + 45))
         
-        mode_value_font = pygame.font.SysFont('Segoe UI', 14)
+        mode_value_font = self._get_cached_font('Segoe UI', 14)
         mode_value_surface = mode_value_font.render(mode_text, True, (255, 255, 255))
         screen.blit(mode_value_surface, (panel_x + 70, panel_y + 45))
         
         # Engine settings
         if game.engine_white or game.engine_black:
-            settings_font = pygame.font.SysFont('Segoe UI', 13)
+            settings_font = self._get_cached_font('Segoe UI', 13)
             
             level_label = settings_font.render("Level:", True, (181, 181, 181))
             screen.blit(level_label, (panel_x + 20, panel_y + 70))
@@ -200,331 +199,237 @@ class Main:
             depth_value = settings_font.render(str(game.depth), True, (129, 182, 76))
             screen.blit(depth_value, (panel_x + 200, panel_y + 70))
         
-        # Current player indicator with visual circle
-        player_font = pygame.font.SysFont('Segoe UI', 14, bold=True)
+        # Current player indicator
+        player_font = self._get_cached_font('Segoe UI', 14, bold=True)
         player_label = player_font.render("Turn:", True, (181, 181, 181))
         screen.blit(player_label, (panel_x + 20, panel_y + 100))
         
-        # Player indicator circle
-        circle_color = (255, 255, 255) if game.next_player == 'white' else (100, 100, 100)
-        pygame.draw.circle(screen, circle_color, (panel_x + 70, panel_y + 107), 8)
-        pygame.draw.circle(screen, (181, 181, 181), (panel_x + 70, panel_y + 107), 8, 2)
+        player_color = (255, 255, 255) if game.next_player == 'white' else (200, 200, 200)
+        player_value = game.next_player.title()
+        player_surface = player_font.render(player_value, True, player_color)
+        screen.blit(player_surface, (panel_x + 70, panel_y + 100))
         
-        player_text = game.next_player.title()
-        player_surface = player_font.render(player_text, True, (255, 255, 255))
-        screen.blit(player_surface, (panel_x + 90, panel_y + 100))
+        # Controls hint
+        hint_font = self._get_cached_font('Segoe UI', 12)
+        hint_surface = hint_font.render("Press 'H' for controls", True, (129, 182, 76))
+        screen.blit(hint_surface, (panel_x + 20, panel_y + 130))
         
-        # Controls info
-        controls_font = pygame.font.SysFont('Segoe UI', 11)
-        controls = [
-            "Press 'A' for Analysis",
-            "Press 'M' for Move Display",
-            "Press 'P' to Export PGN"
-        ]
+        # Quick mode switch hint
+        mode_hint = hint_font.render("1/2/3: Switch modes", True, (181, 181, 181))
+        screen.blit(mode_hint, (panel_x + 20, panel_y + 150))
         
-        y_offset = 180
-        for control in controls:
-            control_surface = controls_font.render(control, True, (129, 182, 76))
-            screen.blit(control_surface, (panel_x + 20, panel_y + y_offset))
-            y_offset += 16
-
-    def _render_game_over_overlay(self, screen, game):
-        """Render modern game over overlay"""
+        # Engine controls hint
+        if game.engine_white or game.engine_black:
+            engine_hint = hint_font.render("+/-: Level, Ctrl+↑/↓: Depth", True, (181, 181, 181))
+            screen.blit(engine_hint, (panel_x + 20, panel_y + 170))
+    
+    def _render_help_overlay(self, screen):
+        """Render help overlay with all controls"""
         # Semi-transparent overlay
         overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 180))
         screen.blit(overlay, (0, 0))
         
-        # Game over panel with shadow
-        panel_width = 450
-        panel_height = 250
+        # Help panel
+        panel_width = 600
+        panel_height = 500
         panel_x = (WIDTH - panel_width) // 2
         panel_y = (HEIGHT - panel_height) // 2
         
-        # Shadow
-        shadow_surface = pygame.Surface((panel_width + 16, panel_height + 16), pygame.SRCALPHA)
-        pygame.draw.rect(shadow_surface, (0, 0, 0, 100), pygame.Rect(0, 0, panel_width + 16, panel_height + 16), border_radius=25)
-        screen.blit(shadow_surface, (panel_x + 8, panel_y + 8))
+        # Panel background
+        panel_surface = pygame.Surface((panel_width, panel_height), pygame.SRCALPHA)
+        pygame.draw.rect(panel_surface, (40, 46, 58, 240), pygame.Rect(0, 0, panel_width, panel_height), border_radius=20)
+        pygame.draw.rect(panel_surface, (84, 92, 108, 255), pygame.Rect(0, 0, panel_width, panel_height), 3, border_radius=20)
+        screen.blit(panel_surface, (panel_x, panel_y))
         
-        # Main panel
-        panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
-        pygame.draw.rect(screen, (40, 46, 58), panel_rect, border_radius=20)
-        pygame.draw.rect(screen, (84, 92, 108), panel_rect, 3, border_radius=20)
+        # Title
+        title_font = self._get_cached_font('Segoe UI', 24, bold=True)
+        title_surface = title_font.render("Chess AI Controls", True, (255, 255, 255))
+        title_rect = title_surface.get_rect(center=(panel_x + panel_width//2, panel_y + 30))
+        screen.blit(title_surface, title_rect)
         
-        # Game result
-        result_font = pygame.font.SysFont('Segoe UI', 36, bold=True)
-        if game.winner:
-            result_text = f"{game.winner.title()} Wins!"
-            result_color = (129, 182, 76)
-        else:
-            result_text = "Draw!"
-            result_color = (181, 181, 181)
-            
-        result_surface = result_font.render(result_text, True, result_color)
-        result_rect = result_surface.get_rect(center=(panel_x + panel_width // 2, panel_y + 50))
-        screen.blit(result_surface, result_rect)
+        # Controls list
+        controls_font = self._get_cached_font('Segoe UI', 14)
+        key_font = self._get_cached_font('Segoe UI', 14, bold=True)
         
-        # Options with modern styling
-        options_font = pygame.font.SysFont('Segoe UI', 16)
-        option_descriptions = pygame.font.SysFont('Segoe UI', 12)
-        
-        options = [
-            ("R", "Restart Game", "Start a new game"),
-            ("A", "Analysis Mode", "Review game with engine analysis"),
-            ("S", "Game Summary", "View performance statistics")
+        controls = [
+            ("Game Modes:", ""),
+            ("1", "Human vs Human"),
+            ("2", "Human vs Engine"),
+            ("3", "Engine vs Engine"),
+            ("", ""),
+            ("Engine Controls:", ""),
+            ("+/-", "Increase/Decrease engine level"),
+            ("Ctrl+↑/↓", "Increase/Decrease engine depth"),
+            ("W", "Toggle white engine"),
+            ("B", "Toggle black engine"),
+            ("", ""),
+            ("Game Controls:", ""),
+            ("T", "Change theme"),
+            ("R", "Reset game"),
+            ("I", "Toggle info panel"),
+            ("H", "Show/hide this help"),
+            ("F11", "Toggle fullscreen"),
+            ("", ""),
+            ("Analysis (after game):", ""),
+            ("A", "Enter analysis mode"),
+            ("S", "Show summary"),
+            ("←/→", "Navigate moves"),
+            ("Space", "Auto-play moves")
         ]
         
-        y_offset = 130
-        for key, title, desc in options:
-            # Key badge
-            key_rect = pygame.Rect(panel_x + 50, panel_y + y_offset - 5, 30, 25)
-            pygame.draw.rect(screen, (129, 182, 76), key_rect, border_radius=5)
+        y_offset = panel_y + 70
+        for key, description in controls:
+            if key == "" and description == "":
+                y_offset += 10
+                continue
+                
+            if description == "":  # Section header
+                header_surface = key_font.render(key, True, (129, 182, 76))
+                screen.blit(header_surface, (panel_x + 30, y_offset))
+                y_offset += 25
+            else:
+                # Key
+                if key:
+                    key_surface = key_font.render(key, True, (255, 255, 255))
+                    screen.blit(key_surface, (panel_x + 50, y_offset))
+                
+                # Description
+                desc_surface = controls_font.render(description, True, (200, 200, 200))
+                screen.blit(desc_surface, (panel_x + 150, y_offset))
+                y_offset += 22
+        
+        # Close instruction
+        close_font = self._get_cached_font('Segoe UI', 12)
+        close_surface = close_font.render("Press 'H' again to close", True, (129, 182, 76))
+        close_rect = close_surface.get_rect(center=(panel_x + panel_width//2, panel_y + panel_height - 20))
+        screen.blit(close_surface, close_rect)
+    
+    def _render_game_over_overlay(self, screen, game):
+        """Render game over overlay"""
+        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 150))
+        screen.blit(overlay, (0, 0))
+        
+        font = self._get_cached_font('Segoe UI', 48, bold=True)
+        if game.winner:
+            text = f"{game.winner.title()} Wins!"
+            color = (100, 255, 100) if game.winner == 'white' else (255, 100, 100)
+        else:
+            text = "Draw!"
+            color = (255, 255, 255)
             
-            key_surface = pygame.font.SysFont('Segoe UI', 14, bold=True).render(key, True, (40, 46, 58))
-            key_text_rect = key_surface.get_rect(center=key_rect.center)
-            screen.blit(key_surface, key_text_rect)
-            
-            # Option title
-            title_surface = options_font.render(title, True, (255, 255, 255))
-            screen.blit(title_surface, (panel_x + 95, panel_y + y_offset - 2))
-            
-            # Option description
-            desc_surface = option_descriptions.render(desc, True, (181, 181, 181))
-            screen.blit(desc_surface, (panel_x + 95, panel_y + y_offset + 18))
-            
-            y_offset += 45
-
+        text_surface = font.render(text, True, color)
+        text_rect = text_surface.get_rect(center=(WIDTH//2, HEIGHT//2))
+        screen.blit(text_surface, text_rect)
+    
+    def _reset_game(self, game, analysis_manager):
+        """Reset the game"""
+        try:
+            analysis_manager.reset()
+            game.reset()
+        except Exception as e:
+            print(f"Error resetting: {e}")
+    
+    def _get_cached_font(self, name, size, bold=False):
+        """Get cached font to improve performance"""
+        key = (name, size, bold)
+        if key not in self._font_cache:
+            self._font_cache[key] = pygame.font.SysFont(name, size, bold=bold)
+        return self._font_cache[key]
+    
+    def _toggle_fullscreen(self):
+        """Toggle fullscreen"""
+        pygame.display.toggle_fullscreen()
+    
     def _handle_game_event(self, event, game, board, dragger, analysis_manager):
-        """Handle game events with modern controls"""
-        # Mouse click
+        """Handle game events"""
         if event.type == pygame.MOUSEBUTTONDOWN:
-            # Check move display click first
-            move_clicked = game.move_display.handle_click(event.pos)
-            if move_clicked is not None:
-                # Could implement jump to move functionality here
-                return True
+            dragger.update_mouse(event.pos)
+            clicked_row = dragger.mouseY // SQSIZE
+            clicked_col = dragger.mouseX // SQSIZE
             
-            if (game.next_player == 'white' and game.engine_white) or \
-               (game.next_player == 'black' and game.engine_black):
-                return True
-            
-            if 0 <= event.pos[0] < WIDTH and 0 <= event.pos[1] < HEIGHT:
-                dragger.update_mouse(event.pos)
-                clicked_row = event.pos[1] // SQSIZE
-                clicked_col = event.pos[0] // SQSIZE
-
-                if board.squares[clicked_row][clicked_col].has_piece():
-                    piece = board.squares[clicked_row][clicked_col].piece
+            if 0 <= clicked_row < 8 and 0 <= clicked_col < 8:
+                square = board.squares[clicked_row][clicked_col]
+                if square.has_piece():
+                    piece = square.piece
                     if piece.color == game.next_player:
                         board.calc_moves(piece, clicked_row, clicked_col, bool=True)
                         dragger.save_initial(event.pos)
                         dragger.drag_piece(piece)
-                        self._render_game_state(self.screen, game, dragger, analysis_manager)
-            return True
         
-        # Mouse motion
         elif event.type == pygame.MOUSEMOTION:
-            if 0 <= event.pos[0] < WIDTH and 0 <= event.pos[1] < HEIGHT:
+            if dragger.dragging:
+                dragger.update_mouse(event.pos)
+            else:
                 motion_row = event.pos[1] // SQSIZE
                 motion_col = event.pos[0] // SQSIZE
                 game.set_hover(motion_row, motion_col)
-
-                if dragger.dragging:
-                    dragger.update_mouse(event.pos)
-                    self._render_game_state(self.screen, game, dragger, analysis_manager)
-                    dragger.update_blit(self.screen)
-            else:
-                game.hovered_sqr = None
-            return True
-        
-        # Mouse wheel (for move display scrolling)
-        elif event.type == pygame.MOUSEWHEEL:
-            if game.move_display.handle_scroll(event):
-                return True
-        
-        # Mouse release
+                    
         elif event.type == pygame.MOUSEBUTTONUP:
-            if (game.next_player == 'white' and game.engine_white) or \
-               (game.next_player == 'black' and game.engine_black):
-                return True
-            
             if dragger.dragging:
                 dragger.update_mouse(event.pos)
+                released_row = dragger.mouseY // SQSIZE
+                released_col = dragger.mouseX // SQSIZE
                 
-                if 0 <= event.pos[0] < WIDTH and 0 <= event.pos[1] < HEIGHT:
-                    released_row = event.pos[1] // SQSIZE
-                    released_col = event.pos[0] // SQSIZE
-
+                if 0 <= released_row < 8 and 0 <= released_col < 8:
                     initial = Square(dragger.initial_row, dragger.initial_col)
                     final = Square(released_row, released_col)
                     move = Move(initial, final)
-
+                    
                     if board.valid_move(dragger.piece, move):
-                        # Record move for analysis and make the move
                         game.make_move(dragger.piece, move)
-                        self._render_game_state(self.screen, game, dragger, analysis_manager)
-                        pygame.display.update()
-            
+                    
             dragger.undrag_piece()
-            return True
-        
-        # Key press
+            
         elif event.type == pygame.KEYDOWN:
-            # Theme and reset
             if event.key == pygame.K_t:
                 game.change_theme()
             elif event.key == pygame.K_r:
                 self._reset_game(game, analysis_manager)
-                
-            # Game mode controls
+            elif event.key == pygame.K_a and game.game_over:
+                analysis_manager.enter_analysis_mode()
+            
+            # Game mode switching
             elif event.key == pygame.K_1:
-                game.set_game_mode(0)
+                game.set_game_mode(0)  # Human vs Human
             elif event.key == pygame.K_2:
-                game.set_game_mode(1)
+                game.set_game_mode(1)  # Human vs Engine
             elif event.key == pygame.K_3:
-                game.set_game_mode(2)
-                
-            # Engine controls
-            elif event.key == pygame.K_e:
-                game.toggle_engine('white')
-            elif event.key == pygame.K_d:
-                game.toggle_engine('black')
-                
-            # Engine settings
-            elif event.key == pygame.K_UP:
-                game.set_engine_depth(min(20, game.depth + 1))
-            elif event.key == pygame.K_DOWN:
-                game.set_engine_depth(max(1, game.depth - 1))
-            elif event.key == pygame.K_RIGHT:
-                game.set_engine_level(min(20, game.level + 1))
-            elif event.key == pygame.K_LEFT:
-                game.set_engine_level(max(0, game.level - 1))
+                game.set_game_mode(2)  # Engine vs Engine
+            
+            # Engine level controls
             elif event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
                 game.increase_level()
             elif event.key == pygame.K_MINUS:
                 game.decrease_level()
-                
-            # Analysis controls
-            elif event.key == pygame.K_a:
-                if game.game_over or len(analysis_manager.analyzer.game_moves) > 0:
-                    analysis_manager.enter_analysis_mode()
-            elif event.key == pygame.K_s:
-                if analysis_manager.is_analysis_complete():
-                    analysis_manager.toggle_summary()
             
-            # Notation controls
-            elif event.key == pygame.K_m:
-                game.move_display.toggle_visibility()
-            elif event.key == pygame.K_p:
-                # Export PGN
-                filename = f"game_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pgn"
-                if game.export_pgn(filename):
-                    print(f"Game exported to {filename}")
-                    
-            # UI controls
+            # Engine depth controls
+            elif event.key == pygame.K_UP:
+                game.set_engine_depth(game.depth + 1)
+            elif event.key == pygame.K_DOWN:
+                game.set_engine_depth(game.depth - 1)
+            
+            # Toggle engines
+            elif event.key == pygame.K_w:
+                game.toggle_engine('white')
+            elif event.key == pygame.K_b:
+                game.toggle_engine('black')
+            
+            # Other features
+            elif event.key == pygame.K_F11:
+                self._toggle_fullscreen()
             elif event.key == pygame.K_i:
                 self.show_game_info = not self.show_game_info
             elif event.key == pygame.K_h:
-                game.move_display.toggle_visibility()
-            elif event.key == pygame.K_F11:
-                self._toggle_fullscreen()
+                self.show_help = not self.show_help
                 
-            return True
-        
         elif event.type == pygame.QUIT:
             pygame.quit()
             sys.exit()
             
         return False
 
-    def _reset_game(self, game, analysis_manager):
-        """Reset game and analysis with proper cleanup"""
-        game.reset()
-        analysis_manager.reset()
-        
-        # Reconnect references after reset
-        game.set_analysis_manager(analysis_manager)
-
-    def _toggle_fullscreen(self):
-        """Toggle fullscreen mode"""
-        pygame.display.toggle_fullscreen()
-
-    def show_startup_screen(self):
-        """Show modern startup screen"""
-        startup_font = pygame.font.SysFont('Segoe UI', 48, bold=True)
-        subtitle_font = pygame.font.SysFont('Segoe UI', 24)
-        info_font = pygame.font.SysFont('Segoe UI', 16)
-        
-        # Gradient background
-        for y in range(HEIGHT):
-            color_intensity = int(40 + (y / HEIGHT) * 20)
-            color = (color_intensity, color_intensity + 6, color_intensity + 18)
-            pygame.draw.line(self.screen, color, (0, y), (WIDTH, y))
-        
-        # Title with shadow
-        title_text = "Modern Chess"
-        title_surface = startup_font.render(title_text, True, (255, 255, 255))
-        title_shadow = startup_font.render(title_text, True, (0, 0, 0))
-        
-        title_rect = title_surface.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 100))
-        shadow_rect = title_rect.copy()
-        shadow_rect.x += 3
-        shadow_rect.y += 3
-        
-        self.screen.blit(title_shadow, shadow_rect)
-        self.screen.blit(title_surface, title_rect)
-        
-        # Subtitle
-        subtitle_surface = subtitle_font.render("with Advanced Analysis", True, (129, 182, 76))
-        subtitle_rect = subtitle_surface.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 60))
-        self.screen.blit(subtitle_surface, subtitle_rect)
-        
-        # Instructions panel
-        panel_width = 600
-        panel_height = 200
-        panel_x = (WIDTH - panel_width) // 2
-        panel_y = HEIGHT // 2 - 10
-        
-        panel_surface = pygame.Surface((panel_width, panel_height), pygame.SRCALPHA)
-        pygame.draw.rect(panel_surface, (0, 0, 0, 100), pygame.Rect(0, 0, panel_width, panel_height), border_radius=15)
-        self.screen.blit(panel_surface, (panel_x, panel_y))
-        
-        instructions = [
-            "Game Modes: 1 (Human vs Human) | 2 (Human vs Engine) | 3 (Engine vs Engine)",
-            "Engine: E/D (Toggle) | ↑/↓ (Depth) | ←/→ (Level) | +/- (Quick Level)",
-            "Analysis: A (Enter Analysis) | S (Summary) | ESC (Exit Analysis)",
-            "Notation: M (Toggle Move Display) | P (Export PGN) | Mouse Wheel (Scroll Moves)",
-            "Other: T (Theme) | R (Reset) | I (Info Panel) | H (Move History) | F11 (Fullscreen)"
-        ]
-        
-        y_offset = panel_y + 30
-        for instruction in instructions:
-            instruction_surface = info_font.render(instruction, True, (255, 255, 255))
-            instruction_rect = instruction_surface.get_rect(center=(WIDTH // 2, y_offset))
-            self.screen.blit(instruction_surface, instruction_rect)
-            y_offset += 30
-            
-        # Start prompt with animation effect
-        start_font = pygame.font.SysFont('Segoe UI', 20, bold=True)
-        start_surface = start_font.render("Click anywhere to start", True, (129, 182, 76))
-        start_rect = start_surface.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 160))
-        self.screen.blit(start_surface, start_rect)
-        
-        pygame.display.update()
-        
-        # Wait for click
-        waiting = True
-        while waiting:
-            for event in pygame.event.get():
-                if event.type == pygame.MOUSEBUTTONDOWN or event.type == pygame.KEYDOWN:
-                    waiting = False
-                elif event.type == pygame.QUIT:
-                    pygame.quit()
-                    sys.exit()
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main = Main()
-    # Show the startup screen
-    main.show_startup_screen()
-    # Start the main game loop
     main.mainloop()

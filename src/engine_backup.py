@@ -1,4 +1,5 @@
-# engine.py - Fixed version with proper error handling and thread safety
+# [file name]: engine.py
+# [file content begin]
 from stockfish import Stockfish
 import chess
 import os
@@ -11,8 +12,6 @@ class ChessEngine:
         self.depth = depth
         self.recovery_attempts = 0
         self.max_recovery_attempts = 3
-        self._is_healthy = True
-        self._last_health_check = 0
         
         # Try to locate Stockfish
         stockfish_path = None
@@ -43,76 +42,68 @@ class ChessEngine:
             raise Exception("Stockfish not found. Please set STOCKFISH_PATH environment variable.")
         
         self.stockfish_path = stockfish_path  # Store for recovery
-        self.engine_lock = threading.RLock()  # Use RLock for nested locking
+        self.engine_lock = threading.Lock()
         self.engine = self._create_engine(skill_level, depth)
         self.board = chess.Board()
-        self.last_fen = chess.STARTING_FEN  # Track last valid position
-        
-    def _test_engine_health(self, engine):
-        """Test if engine is responsive"""
-        try:
-            engine.set_fen_position(chess.STARTING_FEN)
-            return engine.get_best_move() is not None
-        except:
-            return False
-    
-    def _check_engine_health(self):
-        """Check engine health with throttling"""
-        current_time = time.time()
-        if current_time - self._last_health_check < 5:  # Check every 5 seconds max
-            return self._is_healthy
-        
-        self._last_health_check = current_time
-        if self.engine:
-            self._is_healthy = self._test_engine_health(self.engine)
-        return self._is_healthy
+        self.last_fen = None  # Track last valid position
         
     def _create_engine(self, skill_level, depth):
         """Create a new engine instance with proper error handling"""
         try:
-            engine = Stockfish(path=self.stockfish_path)
-            if not engine or not self._test_engine_health(engine):
-                raise Exception("Engine failed health check")
+            with self.engine_lock:
+                engine = Stockfish(path=self.stockfish_path)
                 
-            # Configure for maximum strength at level 20
-            if skill_level >= 20:
-                if depth >= 20:
-                    engine.set_depth(0)  # 0 = unlimited depth in Stockfish
+                # Configure for maximum strength at level 20
+                if skill_level >= 20:
+                    # UNLIMITED STRENGTH MODE
+                    # 1. No skill level limitation
+                    # 2. Use maximum depth or unlimited if depth >= 20
+                    # 3. Enable multi-threading
+                    # 4. Set longer thinking time
+                    
+                    if depth >= 20:
+                        # Unlimited depth - let engine decide
+                        engine.set_depth(0)  # 0 = unlimited depth in Stockfish
+                    else:
+                        engine.set_depth(depth)
+                        
+                    # Configure for maximum performance
+                    try:
+                        # Enable multi-threading (use fewer threads to avoid delays)
+                        engine._stockfish.stdin.write("setoption name Threads value 2\n")
+                        engine._stockfish.stdin.flush()
+                        # Use hash table for better performance
+                        engine._stockfish.stdin.write("setoption name Hash value 128\n")
+                        engine._stockfish.stdin.flush()
+                    except:
+                        pass  # Ignore if options not supported
+                        
+                    print(f"Engine configured for UNLIMITED STRENGTH (level {skill_level})")
                 else:
+                    # Normal skill level mode
+                    engine.set_skill_level(skill_level)
                     engine.set_depth(depth)
                     
-                # Configure for maximum performance
-                try:
-                    engine._stockfish.stdin.write("setoption name Threads value 2\n")
-                    engine._stockfish.stdin.flush()
-                    engine._stockfish.stdin.write("setoption name Hash value 128\n")
-                    engine._stockfish.stdin.flush()
-                except:
-                    pass  # Ignore if options not supported
-                    
-                print(f"Engine configured for UNLIMITED STRENGTH (level {skill_level})")
-            else:
-                # Normal skill level mode
-                engine.set_skill_level(skill_level)
-                engine.set_depth(depth)
-                
-            self._is_healthy = True
-            return engine
+                return engine
         except Exception as e:
             print(f"Engine creation failed: {e}")
-            self._is_healthy = False
             raise
         
     def set_skill_level(self, level):
         self.skill_level = level
         with self.engine_lock:
-            if not self.engine or not self._check_engine_health():
+            if not self.engine:
                 return
             try:
                 if level >= 20:
+                    # UNLIMITED STRENGTH MODE
                     print(f"Engine set to UNLIMITED STRENGTH (level {level})")
+                    
+                    # Configure unlimited depth if current depth is also max
                     if self.depth >= 20:
                         self.engine.set_depth(0)  # Unlimited depth
+                        
+                    # Set performance options
                     try:
                         self.engine._stockfish.stdin.write("setoption name Threads value 2\n")
                         self.engine._stockfish.stdin.flush()
@@ -124,7 +115,8 @@ class ChessEngine:
                     self.engine.set_skill_level(level)
             except Exception as e:
                 print(f"Error setting skill level: {e}")
-                if self._recover_engine() and self.engine:
+                self._recover_engine()
+                if self.engine:
                     try:
                         if level >= 20:
                             print(f"Engine set to UNLIMITED STRENGTH (level {level}) after recovery")
@@ -136,9 +128,10 @@ class ChessEngine:
     def set_depth(self, depth):
         self.depth = depth
         with self.engine_lock:
-            if not self.engine or not self._check_engine_health():
+            if not self.engine:
                 return
             try:
+                # If at maximum level and depth, use unlimited depth
                 if self.skill_level >= 20 and depth >= 20:
                     self.engine.set_depth(0)  # 0 = unlimited depth
                     print(f"Engine set to UNLIMITED DEPTH (depth {depth})")
@@ -146,7 +139,8 @@ class ChessEngine:
                     self.engine.set_depth(depth)
             except Exception as e:
                 print(f"Error setting depth: {e}")
-                if self._recover_engine() and self.engine:
+                self._recover_engine()
+                if self.engine:
                     try:
                         if self.skill_level >= 20 and depth >= 20:
                             self.engine.set_depth(0)
@@ -158,27 +152,24 @@ class ChessEngine:
         
     def set_position(self, fen):
         # Validate FEN before using
-        if not fen or not isinstance(fen, str) or len(fen.strip()) == 0:
-            return False
         try:
-            test_board = chess.Board(fen)  # Test if FEN is valid
-            if not test_board.is_valid():
-                return False
+            chess.Board(fen)  # Test if FEN is valid
         except Exception as e:
             print(f"Invalid FEN: {fen}, error: {e}")
             return False
             
+        self.last_fen = fen  # Store last valid FEN
         with self.engine_lock:
-            if not self.engine or not self._check_engine_health():
+            if not self.engine:
                 return False
             try:
-                self.last_fen = fen  # Store last valid FEN
                 self.engine.set_fen_position(fen)
                 self.board = chess.Board(fen)
                 return True
             except Exception as e:
                 print(f"Error setting position: {e}")
-                if self._recover_engine() and self.engine:
+                self._recover_engine()
+                if self.engine:
                     try:
                         self.engine.set_fen_position(fen)
                         self.board = chess.Board(fen)
@@ -190,7 +181,7 @@ class ChessEngine:
         
     def get_best_move(self):
         with self.engine_lock:
-            if not self.engine or not self._check_engine_health():
+            if not self.engine:
                 return None
             try:
                 move = self.engine.get_best_move()
@@ -199,7 +190,8 @@ class ChessEngine:
                 return move
             except Exception as e:
                 print(f"Error getting best move: {e}")
-                if self._recover_engine() and self.engine:
+                self._recover_engine()
+                if self.engine:
                     try:
                         return self.engine.get_best_move()
                     except Exception as e2:
@@ -209,7 +201,7 @@ class ChessEngine:
     
     def get_evaluation(self):
         with self.engine_lock:
-            if not self.engine or not self._check_engine_health():
+            if not self.engine:
                 return None
             try:
                 eval_result = self.engine.get_evaluation()
@@ -218,7 +210,8 @@ class ChessEngine:
                 return eval_result
             except Exception as e:
                 print(f"Error getting evaluation: {e}")
-                if self._recover_engine() and self.engine:
+                self._recover_engine()
+                if self.engine:
                     try:
                         return self.engine.get_evaluation()
                     except Exception as e2:
@@ -258,9 +251,9 @@ class ChessEngine:
         """Recover from engine crashes by recreating the instance"""
         self.recovery_attempts += 1
         if self.recovery_attempts > self.max_recovery_attempts:
-            print(f"Max recovery attempts ({self.max_recovery_attempts}) reached. Engine unhealthy.")
-            self._is_healthy = False
-            return False
+            print(f"Max recovery attempts ({self.max_recovery_attempts}) reached. Disabling engine.")
+            self.engine = None
+            return
             
         print(f"Recovering crashed engine... (attempt {self.recovery_attempts})")
         try:
@@ -289,10 +282,8 @@ class ChessEngine:
                 
             # Reset recovery counter on success
             self.recovery_attempts = 0
-            self._is_healthy = True
-            return True
         except Exception as e:
             print(f"Engine recovery failed: {e}")
             if self.recovery_attempts >= self.max_recovery_attempts:
-                self._is_healthy = False
-            return False
+                self.engine = None
+# [file content end]

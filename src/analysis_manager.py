@@ -1,7 +1,7 @@
-# analysis_manager.py - Updated with modern UI integration
+# analysis_manager.py - Updated with consolidated interface
 import pygame
 from enhanced_analysis import EnhancedGameAnalyzer
-from analysis_screen import AnalysisScreen
+from enhanced_analysis_screen import EnhancedAnalysisScreen
 from game_summary import GameSummaryWidget
 
 class AnalysisManager:
@@ -9,13 +9,16 @@ class AnalysisManager:
         self.config = config
         self.engine = engine
         
-        # Analysis components with modern styling
+        # Analysis components with enhanced Chess.com-style interface
+        from opening_database import OpeningDatabase
+        self.opening_db = OpeningDatabase()
+        
         self.analyzer = EnhancedGameAnalyzer(engine)
-        self.analysis_screen = AnalysisScreen(config)
+        self.analysis_interface = EnhancedAnalysisScreen(config, self.opening_db)
         self.summary_widget = GameSummaryWidget(config)
         
         # Connect components
-        self.analysis_screen.set_analyzer(self.analyzer)
+        self.analysis_interface.set_analyzer(self.analyzer)
         self.summary_widget.set_analyzer(self.analyzer)
         
         # State management
@@ -43,30 +46,42 @@ class AnalysisManager:
             
     def start_analysis(self):
         """Start the analysis process"""
-        if not self.analysis_started and len(self.analyzer.game_moves) > 0:
-            self.analysis_started = True
-            self.analyzer.start_analysis()
-            return True
+        try:
+            if not self.analysis_started and len(self.analyzer.game_moves) > 0:
+                # Check if engine is healthy before starting
+                if not self.engine or not hasattr(self.engine, '_is_healthy') or not self.engine._is_healthy:
+                    print("Engine not healthy, cannot start analysis")
+                    return False
+                    
+                self.analysis_started = True
+                return self.analyzer.start_analysis()
+        except Exception as e:
+            print(f"Error starting analysis: {e}")
         return False
         
-    def enter_analysis_mode(self):
+    def enter_analysis_mode(self, initial_fen=None):
         """Enter modern analysis mode"""
-        if len(self.analyzer.game_moves) > 0:
-            self.active = True
-            self.current_screen = self.SCREEN_ANALYSIS
-            self.analysis_screen.activate()
-            
-            # Start analysis if not already started
-            if not self.analysis_started:
-                self.start_analysis()
-            return True
+        try:
+            if len(self.analyzer.game_moves) > 0:
+                self.active = True
+                self.current_screen = self.SCREEN_ANALYSIS
+                # Pass initial FEN to analysis screen
+                if hasattr(self.analysis_interface, 'activate'):
+                    self.analysis_interface.activate(initial_fen)
+                
+                # Start analysis if not already started
+                if not self.analysis_started:
+                    self.start_analysis()
+                return True
+        except Exception as e:
+            print(f"Error entering analysis mode: {e}")
         return False
-        
+    
     def exit_analysis_mode(self):
         """Exit analysis mode"""
         self.active = False
         self.current_screen = self.SCREEN_GAME
-        self.analysis_screen.deactivate()
+        self.analysis_interface.deactivate()
         self.show_summary = False
         self.auto_play = False
         self.show_controls_help = False
@@ -111,7 +126,7 @@ class AnalysisManager:
         if self.auto_play and self.analyzer.is_analysis_complete():
             current_time = pygame.time.get_ticks()
             if current_time - self.last_auto_play_time >= self.auto_play_speed:
-                self.analysis_screen.next_move()
+                self.analysis_interface.next_move()
                 self.last_auto_play_time = current_time
                 
     def render(self, surface):
@@ -121,7 +136,7 @@ class AnalysisManager:
             
         if self.current_screen == self.SCREEN_ANALYSIS:
             # Render modern analysis screen
-            self.analysis_screen.render(surface)
+            self.analysis_interface.render(surface)
             
             # Render summary widget if active
             if self.show_summary:
@@ -219,7 +234,7 @@ class AnalysisManager:
             
         # Handle screen-specific input
         if self.current_screen == self.SCREEN_ANALYSIS:
-            if self.analysis_screen.handle_input(event):
+            if self.analysis_interface.handle_input(event):
                 return True
                 
         # Handle manager-specific input
@@ -273,7 +288,7 @@ class AnalysisManager:
     def get_current_move_analysis(self):
         """Get current move analysis"""
         if self.current_screen == self.SCREEN_ANALYSIS:
-            return self.analysis_screen.get_current_move()
+            return self.analysis_interface.get_current_move()
         return None
         
     def get_game_summary(self):
@@ -283,7 +298,7 @@ class AnalysisManager:
     def jump_to_move(self, move_number):
         """Jump to specific move in analysis"""
         if self.active and self.current_screen == self.SCREEN_ANALYSIS:
-            self.analysis_screen.jump_to_move(move_number)
+            self.analysis_interface.jump_to_move(move_number)
             
     def get_analysis_stats(self):
         """Get detailed analysis statistics for display"""
@@ -360,12 +375,23 @@ class AnalysisManager:
         
     def reset(self):
         """Reset analysis manager"""
-        self.analyzer.reset()
-        self.active = False
-        self.show_summary = False
-        self.analysis_started = False
-        self.current_screen = self.SCREEN_GAME
-        self.auto_play = False
-        self.show_controls_help = False
-        self.summary_widget.hide()
-        self.analysis_screen.deactivate()
+        try:
+            # Stop any ongoing analysis
+            if hasattr(self.analyzer, 'stop_analysis'):
+                self.analyzer.stop_analysis()
+            
+            self.analyzer.reset()
+            self.active = False
+            self.show_summary = False
+            self.analysis_started = False
+            self.current_screen = self.SCREEN_GAME
+            self.auto_play = False
+            self.show_controls_help = False
+            
+            if hasattr(self.summary_widget, 'hide'):
+                self.summary_widget.hide()
+            if hasattr(self.analysis_interface, 'deactivate'):
+                self.analysis_interface.deactivate()
+        except Exception as e:
+            print(f"Error resetting analysis manager: {e}")
+    

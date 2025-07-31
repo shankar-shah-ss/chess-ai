@@ -1,9 +1,12 @@
 # config_manager.py - Centralized configuration management
 import json
 import os
+import pygame
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, asdict
 from pathlib import Path
+from sound import Sound
+from theme import Theme
 
 @dataclass
 class EngineConfig:
@@ -53,18 +56,36 @@ class GameConfig:
     pgn_directory: str = "games"
     sound_enabled: bool = True
     move_validation: bool = True
+    font_size: int = 18
+    font_bold: bool = True
 
 class ConfigManager:
     """Centralized configuration manager"""
     
     def __init__(self, config_file: str = "chess_ai_config.json"):
+        # Ensure pygame is fully initialized
+        if not pygame.get_init():
+            pygame.init()
+        else:
+            pygame.mixer.init()  # Initialize mixer first
+            pygame.font.init()   # Initialize font system
+        
         self.config_file = Path(config_file)
         self.engine = EngineConfig()
         self.ui = UIConfig()
         self.analysis = AnalysisConfig()
         self.game = GameConfig()
         
+        # Theme and sound management (from old config.py)
+        self.themes = []
+        self._add_themes()
+        self.theme = self.themes[self.ui.theme_index]
+        self.font = pygame.font.SysFont('monospace', self.game.font_size, bold=self.game.font_bold)
+        
         self.load_config()
+        
+        # Load sounds after config is loaded
+        self._load_sounds()
         
     def load_config(self):
         """Load configuration from file"""
@@ -78,10 +99,15 @@ class ConfigManager:
                     self._update_dataclass(self.engine, data['engine'])
                 if 'ui' in data:
                     self._update_dataclass(self.ui, data['ui'])
+                    # Update theme after loading UI config
+                    self.ui.theme_index = max(0, min(self.ui.theme_index, len(self.themes) - 1))
+                    self.theme = self.themes[self.ui.theme_index]
                 if 'analysis' in data:
                     self._update_dataclass(self.analysis, data['analysis'])
                 if 'game' in data:
                     self._update_dataclass(self.game, data['game'])
+                    # Update font after loading game config
+                    self.font = pygame.font.SysFont('monospace', self.game.font_size, bold=self.game.font_bold)
                     
                 print(f"Configuration loaded from {self.config_file}")
             except Exception as e:
@@ -201,6 +227,59 @@ class ConfigManager:
             self._update_dataclass(self.game, data['game'])
             
         self.save_config()
+        
+    def _add_themes(self):
+        """Add predefined themes"""
+        green = Theme((234, 235, 200), (119, 154, 88), (244, 247, 116), (172, 195, 51), '#C86464', '#C84646')
+        brown = Theme((235, 209, 166), (165, 117, 80), (245, 234, 100), (209, 185, 59), '#C86464', '#C84646')
+        blue = Theme((229, 228, 200), (60, 95, 135), (123, 187, 227), (43, 119, 191), '#C86464', '#C84646')
+        gray = Theme((120, 119, 118), (86, 85, 84), (99, 126, 143), (82, 102, 128), '#C86464', '#C84646')
+        self.themes = [green, brown, blue, gray]
+        
+    def _load_sounds(self):
+        """Load sound files"""
+        if self.game.sound_enabled:
+            self.move_sound = self._load_sound('move.wav')
+            self.capture_sound = self._load_sound('capture.wav')
+            self.check_sound = self._load_sound('check.wav')
+        else:
+            self.move_sound = None
+            self.capture_sound = None
+            self.check_sound = None
+            
+    def _load_sound(self, filename):
+        """Load a sound file"""
+        paths = [
+            os.path.join('..', 'assets', 'sounds', filename),
+            os.path.join('assets', 'sounds', filename)
+        ]
+        
+        for path in paths:
+            if os.path.exists(path):
+                return Sound(path)
+        print(f"Warning: Sound file not found - {filename}")
+        return None
+        
+    def change_theme(self):
+        """Change to next theme"""
+        self.ui.theme_index = (self.ui.theme_index + 1) % len(self.themes)
+        self.theme = self.themes[self.ui.theme_index]
+        self.save_config()
+        
+    def update_game_config(self, **kwargs):
+        """Update game configuration"""
+        for key, value in kwargs.items():
+            if hasattr(self.game, key):
+                setattr(self.game, key, value)
+        self.save_config()
+        
+        # Reload sounds if sound_enabled changed
+        if 'sound_enabled' in kwargs:
+            self._load_sounds()
+            
+        # Reload font if font settings changed
+        if 'font_size' in kwargs or 'font_bold' in kwargs:
+            self.font = pygame.font.SysFont('monospace', self.game.font_size, bold=self.game.font_bold)
 
 # Global configuration instance
 config_manager = ConfigManager()

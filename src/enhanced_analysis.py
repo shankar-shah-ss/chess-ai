@@ -1,11 +1,16 @@
-# Move this to the top of the file
-import chess
 # enhanced_analysis.py - Updated with improved summary generation
 import threading
 import time
 from threading import Lock
 from collections import namedtuple
 import copy
+
+# Import chess library
+try:
+    import chess
+except ImportError:
+    print("Warning: python-chess library not found. Analysis features may not work.")
+    chess = None
 
 MoveAnalysis = namedtuple('MoveAnalysis', [
     'move', 'player', 'position_before', 'position_after', 
@@ -23,6 +28,8 @@ class EnhancedGameAnalyzer:
         self.analysis_lock = Lock()
         self.analysis_thread = None
         self.analysis_progress = 0
+        self.max_moves = 200  # Prevent memory issues
+        self._stop_analysis = False
         
         # Enhanced classification thresholds (in centipawns)
         self.THRESHOLDS = {
@@ -43,21 +50,29 @@ class EnhancedGameAnalyzer:
             'LOSING': -200       # -2 pawns disadvantage
         }
         
-        # Classification colors for display
+        # Classification colors for display (Chess.com style)
         self.COLORS = {
-            'BRILLIANT': (28, 158, 255),
-            'GREAT': (96, 169, 23),
-            'BEST': (96, 169, 23),
-            'EXCELLENT': (96, 169, 23),
-            'OKAY': (115, 192, 67),
-            'MISS': (255, 167, 38),
-            'INACCURACY': (255, 167, 38),
-            'MISTAKE': (255, 146, 146),
-            'BLUNDER': (242, 113, 102)
+            'BRILLIANT': (28, 158, 255),    # Bright blue
+            'GREAT': (96, 169, 23),         # Green
+            'BEST': (96, 169, 23),          # Green
+            'EXCELLENT': (96, 169, 23),     # Green
+            'OKAY': (115, 192, 67),         # Light green
+            'MISS': (255, 167, 38),         # Orange
+            'INACCURACY': (255, 167, 38),   # Orange
+            'MISTAKE': (255, 146, 146),     # Light red
+            'BLUNDER': (242, 113, 102)      # Red
         }
         
     def record_move(self, move, player, position_before):
         """Record a move for later analysis"""
+        if len(self.game_moves) >= self.max_moves:
+            print(f"Warning: Maximum moves ({self.max_moves}) reached, skipping analysis")
+            return
+            
+        if not position_before or not self._validate_fen(position_before):
+            print(f"Invalid position FEN, skipping move analysis")
+            return
+            
         self.game_moves.append({
             'move': move,
             'player': player,
@@ -70,14 +85,27 @@ class EnhancedGameAnalyzer:
         if self.analysis_thread and self.analysis_thread.is_alive():
             return False
             
+        if not self.engine or not hasattr(self.engine, '_is_healthy') or not self.engine._is_healthy:
+            print("Engine not healthy, cannot start analysis")
+            return False
+            
         self.analysis_complete = False
         self.analyzed_moves = []
         self.analysis_progress = 0
+        self._stop_analysis = False
         self.analysis_thread = threading.Thread(target=self._analyze_game)
         self.analysis_thread.daemon = True
         self.analysis_thread.start()
         return True
         
+    def _validate_fen(self, fen):
+        """Validate FEN string"""
+        try:
+            board = chess.Board(fen)
+            return board.is_valid()
+        except:
+            return False
+    
     def _analyze_game(self):
         """Analyze each move in the game with enhanced classification"""
         total_moves = len(self.game_moves)
@@ -86,7 +114,14 @@ class EnhancedGameAnalyzer:
             return
             
         for i, move_data in enumerate(self.game_moves):
+            if self._stop_analysis:
+                break
+                
             try:
+                # Check engine health before each analysis
+                if not self.engine or not hasattr(self.engine, '_is_healthy') or not self.engine._is_healthy:
+                    print("Engine became unhealthy during analysis")
+                    break
                 # Set position before the move
                 self.engine.set_position(move_data['position_before'])
                 
@@ -147,7 +182,9 @@ class EnhancedGameAnalyzer:
                 )
                 
                 with self.analysis_lock:
-                    self.analyzed_moves.append(analysis)
+                    # Prevent unbounded growth
+                    if len(self.analyzed_moves) < self.max_moves:
+                        self.analyzed_moves.append(analysis)
                     self.analysis_progress = int((i + 1) / total_moves * 100)
                     
             except Exception as e:
@@ -278,35 +315,44 @@ class EnhancedGameAnalyzer:
         # Calculate evaluation loss
         eval_loss = self._calculate_eval_loss(eval_before, eval_after)
         
-        # Check if it's the best move
+        # BRILLIANT: Good piece sacrifice in non-losing position
+        if (is_sacrifice and 
+            position_assessment in ['BETTER', 'EQUAL'] and 
+            eval_loss <= 15 and 
+            actual_uci == candidate_moves[0]):
+            return 'BRILLIANT', eval_loss
+            
+        # GREAT: Critical move that changes game outcome or only good move
+        if (actual_uci == candidate_moves[0] and 
+            self._is_critical_move(eval_before, eval_after, candidate_moves, move_index, total_moves)):
+            return 'GREAT', eval_loss
+            
+        # BEST: Top engine move
         if actual_uci == candidate_moves[0]:
-            # Best move, but could still be BRILLIANT or GREAT
-            if is_sacrifice and position_assessment in ['BETTER', 'EQUAL'] and eval_loss <= 10:
-                return 'BRILLIANT', eval_loss
-            elif self._is_critical_move(eval_before, eval_after, candidate_moves, move_index, total_moves):
-                return 'GREAT', eval_loss
-            else:
-                return 'BEST', eval_loss
-                
-        # Check if it's in top moves
-        if actual_uci in candidate_moves[:2]:
+            return 'BEST', eval_loss
+            
+        # EXCELLENT: Second best move, very close to best
+        if actual_uci in candidate_moves[:2] and eval_loss <= 25:
             return 'EXCELLENT', eval_loss
             
-        # Check for missed opportunities (opponent's previous move was bad)
+        # OKAY: Solid move, doesn't create weakness
+        if eval_loss <= self.THRESHOLDS['OKAY']:
+            return 'OKAY', eval_loss
+            
+        # MISS: Failed to capitalize on opponent's mistake
         if self._is_missed_opportunity(move_index, eval_before):
             return 'MISS', eval_loss
             
-        # Standard classification based on evaluation loss
-        if eval_loss >= self.THRESHOLDS['BLUNDER']:
-            return 'BLUNDER', eval_loss
-        elif eval_loss >= self.THRESHOLDS['MISTAKE']:
-            return 'MISTAKE', eval_loss
-        elif eval_loss >= self.THRESHOLDS['INACCURACY']:
+        # INACCURACY: Questionable choice
+        if eval_loss <= self.THRESHOLDS['INACCURACY']:
             return 'INACCURACY', eval_loss
-        elif eval_loss <= self.THRESHOLDS['OKAY']:
-            return 'OKAY', eval_loss
-        else:
-            return 'OKAY', eval_loss
+            
+        # MISTAKE: Creates noticeable weakness
+        if eval_loss <= self.THRESHOLDS['MISTAKE']:
+            return 'MISTAKE', eval_loss
+            
+        # BLUNDER: Significant loss
+        return 'BLUNDER', eval_loss
             
     def _is_critical_move(self, eval_before, eval_after, candidates, move_index, total_moves):
         """Determine if this is a critical move that changes the game outcome"""
@@ -554,18 +600,18 @@ class EnhancedGameAnalyzer:
             'black_brilliancies': black_classifications.get('BRILLIANT', 0)
         }
         
+    def stop_analysis(self):
+        """Stop ongoing analysis"""
+        self._stop_analysis = True
+        if self.analysis_thread and self.analysis_thread.is_alive():
+            self.analysis_thread.join(timeout=2.0)
+    
     def reset(self):
         """Reset analyzer for new game"""
-        self.game_moves = []
-        self.analyzed_moves = []
-        self.analysis_complete = False
-        self.analysis_progress = 0
-        if self.analysis_thread and self.analysis_thread.is_alive():
-            pass  # Let it finish naturally
-
-# Import chess library
-try:
-    import chess
-except ImportError:
-    print("Warning: python-chess library not found. Analysis features may not work.")
-    chess = None
+        self.stop_analysis()
+        with self.analysis_lock:
+            self.game_moves = []
+            self.analyzed_moves = []
+            self.analysis_complete = False
+            self.analysis_progress = 0
+            self._stop_analysis = False
