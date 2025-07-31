@@ -1,16 +1,11 @@
+# Move this to the top of the file
+import chess
 # enhanced_analysis.py - Updated with improved summary generation
 import threading
 import time
 from threading import Lock
 from collections import namedtuple
 import copy
-
-# Import chess library
-try:
-    import chess
-except ImportError:
-    print("Warning: python-chess library not found. Analysis features may not work.")
-    chess = None
 
 MoveAnalysis = namedtuple('MoveAnalysis', [
     'move', 'player', 'position_before', 'position_after', 
@@ -28,8 +23,6 @@ class EnhancedGameAnalyzer:
         self.analysis_lock = Lock()
         self.analysis_thread = None
         self.analysis_progress = 0
-        self.max_moves = 200  # Prevent memory issues
-        self._stop_analysis = False
         
         # Enhanced classification thresholds (in centipawns)
         self.THRESHOLDS = {
@@ -65,14 +58,6 @@ class EnhancedGameAnalyzer:
         
     def record_move(self, move, player, position_before):
         """Record a move for later analysis"""
-        if len(self.game_moves) >= self.max_moves:
-            print(f"Warning: Maximum moves ({self.max_moves}) reached, skipping analysis")
-            return
-            
-        if not position_before or not self._validate_fen(position_before):
-            print(f"Invalid position FEN, skipping move analysis")
-            return
-            
         self.game_moves.append({
             'move': move,
             'player': player,
@@ -85,27 +70,14 @@ class EnhancedGameAnalyzer:
         if self.analysis_thread and self.analysis_thread.is_alive():
             return False
             
-        if not self.engine or not hasattr(self.engine, '_is_healthy') or not self.engine._is_healthy:
-            print("Engine not healthy, cannot start analysis")
-            return False
-            
         self.analysis_complete = False
         self.analyzed_moves = []
         self.analysis_progress = 0
-        self._stop_analysis = False
         self.analysis_thread = threading.Thread(target=self._analyze_game)
         self.analysis_thread.daemon = True
         self.analysis_thread.start()
         return True
         
-    def _validate_fen(self, fen):
-        """Validate FEN string"""
-        try:
-            board = chess.Board(fen)
-            return board.is_valid()
-        except:
-            return False
-    
     def _analyze_game(self):
         """Analyze each move in the game with enhanced classification"""
         total_moves = len(self.game_moves)
@@ -114,14 +86,7 @@ class EnhancedGameAnalyzer:
             return
             
         for i, move_data in enumerate(self.game_moves):
-            if self._stop_analysis:
-                break
-                
             try:
-                # Check engine health before each analysis
-                if not self.engine or not hasattr(self.engine, '_is_healthy') or not self.engine._is_healthy:
-                    print("Engine became unhealthy during analysis")
-                    break
                 # Set position before the move
                 self.engine.set_position(move_data['position_before'])
                 
@@ -182,9 +147,7 @@ class EnhancedGameAnalyzer:
                 )
                 
                 with self.analysis_lock:
-                    # Prevent unbounded growth
-                    if len(self.analyzed_moves) < self.max_moves:
-                        self.analyzed_moves.append(analysis)
+                    self.analyzed_moves.append(analysis)
                     self.analysis_progress = int((i + 1) / total_moves * 100)
                     
             except Exception as e:
@@ -600,18 +563,20 @@ class EnhancedGameAnalyzer:
             'black_brilliancies': black_classifications.get('BRILLIANT', 0)
         }
         
-    def stop_analysis(self):
-        """Stop ongoing analysis"""
-        self._stop_analysis = True
-        if self.analysis_thread and self.analysis_thread.is_alive():
-            self.analysis_thread.join(timeout=2.0)
-    
     def reset(self):
         """Reset analyzer for new game"""
-        self.stop_analysis()
-        with self.analysis_lock:
-            self.game_moves = []
-            self.analyzed_moves = []
-            self.analysis_complete = False
-            self.analysis_progress = 0
-            self._stop_analysis = False
+        self.game_moves = []
+        self.analyzed_moves = []
+        self.analysis_complete = False
+        self.analysis_progress = 0
+        if self.analysis_thread and self.analysis_thread.is_alive():
+            self.analysis_thread.join(timeout=0.5)
+        self.analysis_thread = None
+        self.analysis_complete = False
+
+# Import chess library
+try:
+    import chess
+except ImportError:
+    print("Warning: python-chess library not found. Analysis features may not work.")
+    chess = None
