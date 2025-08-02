@@ -1,5 +1,4 @@
 # [file name]: dragger.py
-# [file content begin]
 import pygame
 
 from const import *

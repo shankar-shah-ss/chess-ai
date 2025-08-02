@@ -25,3 +25,17 @@ AttributeError: 'Game' object has no attribute 'thread_cleanup_lock'
          ^^^^^^^^^^^^^^^^^^^^^^^^
 AttributeError: 'Game' object has no attribute 'thread_cleanup_lock'
 
+2025-08-02 19:39:45,888 - MainThread - ChessAI - ERROR - wrapper:163 - Error in cleanup: 'Game' object has no attribute 'thread_cleanup_lock'
+2025-08-02 19:39:45,891 - MainThread - ChessAI - DEBUG - wrapper:164 - Traceback (most recent call last):
+  File "/Users/shankarprasadsah/Desktop/chess-ai/src/error_handling.py", line 150, in wrapper
+  File "/Users/shankarprasadsah/Desktop/chess-ai/src/game.py", line 1020, in cleanup
+AttributeError: 'Game' object has no attribute 'thread_cleanup_lock'
+
+2025-08-02 19:40:30,530 - MainThread - ChessAI - ERROR - wrapper:163 - Error in cleanup: 'Game' object has no attribute 'thread_cleanup_lock'
+2025-08-02 19:40:30,532 - MainThread - ChessAI - DEBUG - wrapper:164 - Traceback (most recent call last):
+  File "/Users/shankarprasadsah/Desktop/chess-ai/src/error_handling.py", line 150, in wrapper
+  File "/Users/shankarprasadsah/Desktop/chess-ai/src/game.py", line 1020, in cleanup
+    with self.thread_cleanup_lock:
+         ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'Game' object has no attribute 'thread_cleanup_lock'
+

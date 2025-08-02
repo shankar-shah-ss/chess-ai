@@ -1,4 +1,4 @@
-# game.py - Enhanced with modern analysis integration and improved threading
+# game.py - Enhanced version with improved threading and resource management
 import pygame
 import time
 import queue
@@ -222,8 +222,9 @@ class Game:
         self.draw_offered = False  # Track if a draw has been offered
         self.draw_offer_by = None  # Track who offered the draw
         self.draw_accepted = False  # Track if draw was accepted by mutual agreement
-        
-
+        self.no_moves_feedback = None  # Track feedback for pieces with no moves
+        self.move_preview = None  # Track move previews for right-clicked pieces
+        self.all_moves_hint = None  # Track all movable pieces hint
         
         # Threading with proper cleanup
         self.engine_thread = None
@@ -250,8 +251,6 @@ class Game:
             self.engine_white = True
             self.engine_black = True
 
-
-    
     def _get_engine_for_player(self, player):
         """Get the correct engine instance for the given player"""
         with self.engine_creation_lock:
@@ -1144,3 +1143,4 @@ class Game:
             self.cleanup()
         except:
             pass
+# [file content end]

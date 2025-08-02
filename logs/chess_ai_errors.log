@@ -1,3 +1,5 @@
 2025-08-02 14:41:58,395 - MainThread - ChessAI - [31mERROR[0m - wrapper:163 - Error in cleanup: 'Game' object has no attribute 'thread_cleanup_lock'
 2025-08-02 14:42:20,879 - MainThread - ChessAI - [31mERROR[0m - wrapper:163 - Error in cleanup: 'Game' object has no attribute 'thread_cleanup_lock'
 2025-08-02 14:42:26,036 - MainThread - ChessAI - [31mERROR[0m - wrapper:163 - Error in cleanup: 'Game' object has no attribute 'thread_cleanup_lock'
+2025-08-02 19:39:45,888 - MainThread - ChessAI - [31mERROR[0m - wrapper:163 - Error in cleanup: 'Game' object has no attribute 'thread_cleanup_lock'
+2025-08-02 19:40:30,530 - MainThread - ChessAI - [31mERROR[0m - wrapper:163 - Error in cleanup: 'Game' object has no attribute 'thread_cleanup_lock'

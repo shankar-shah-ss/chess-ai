@@ -1,3 +1,4 @@
+# main.py
 import pygame
 import sys
 import os
@@ -15,8 +16,6 @@ class Main:
         pygame.display.set_caption('Chess with Modern Analysis')
         self.game = Game()
         self.clock = pygame.time.Clock()
-        
-
         
         # UI state
         self.show_game_info = True
@@ -40,7 +39,6 @@ class Main:
         game = self.game
         board = self.game.board
         dragger = self.game.dragger
-
 
         # Set initial game mode
         game.set_game_mode(0)  # Start with human vs human
@@ -66,8 +64,6 @@ class Main:
                 with game.evaluation_lock:
                     game.evaluation = game.evaluation_thread.evaluation
                 game.evaluation_thread = None
-
-
 
             # Handle game over state
             if game.game_over:
@@ -338,8 +334,6 @@ class Main:
             # Cleanup game resources
             if hasattr(self, 'game'):
                 self.game.cleanup()
-            
-
             
             # Cleanup resource manager
             if hasattr(self, 'resource_manager'):
