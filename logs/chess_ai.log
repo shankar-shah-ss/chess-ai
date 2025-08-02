@@ -1,37 +1,27 @@
-2025-07-31 23:46:19,234 - MainThread - ChessAI - INFO - initialize_systems:145 - Chess AI launcher started
-2025-07-31 23:46:19,246 - MainThread - ChessAI - ERROR - validate_config:289 - Configuration validation failed: ['Missing required section: performance']
-2025-07-31 23:46:19,246 - MainThread - ChessAI - WARNING - load_config:102 - Configuration validation failed, attempting to fix...
-2025-07-31 23:46:19,246 - MainThread - ChessAI - INFO - fix_config:409 - Added default value for engine.threads: 2
-2025-07-31 23:46:19,246 - MainThread - ChessAI - INFO - fix_config:409 - Added default value for engine.hash_size_mb: 128
-2025-07-31 23:46:19,246 - MainThread - ChessAI - INFO - fix_config:409 - Added default value for ui.font_size: 14
-2025-07-31 23:46:19,246 - MainThread - ChessAI - INFO - fix_config:409 - Added default value for ui.font_family: Arial
-2025-07-31 23:46:19,247 - MainThread - ChessAI - INFO - fix_config:409 - Added default value for analysis.enable_opening_book: True
-2025-07-31 23:46:19,247 - MainThread - ChessAI - INFO - fix_config:409 - Added default value for analysis.cache_analysis: True
-2025-07-31 23:46:19,247 - MainThread - ChessAI - INFO - fix_config:409 - Added default value for game.auto_promote_queen: False
-2025-07-31 23:46:19,247 - MainThread - ChessAI - INFO - fix_config:409 - Added default value for game.highlight_legal_moves: True
-2025-07-31 23:46:19,247 - MainThread - ChessAI - INFO - fix_config:409 - Added default value for performance.max_memory_mb: 1024
-2025-07-31 23:46:19,247 - MainThread - ChessAI - INFO - fix_config:409 - Added default value for performance.max_threads: 8
-2025-07-31 23:46:19,247 - MainThread - ChessAI - INFO - fix_config:409 - Added default value for performance.cache_cleanup_interval: 300
-2025-07-31 23:46:19,247 - MainThread - ChessAI - INFO - fix_config:409 - Added default value for performance.enable_performance_monitoring: True
-2025-07-31 23:46:19,247 - MainThread - ChessAI - INFO - _save_config_data:153 - Configuration data saved to chess_ai_config.json
-2025-07-31 23:46:19,247 - MainThread - ChessAI - INFO - load_config:107 - Configuration has been fixed and saved
-2025-07-31 23:46:19,308 - MainThread - ChessAI - INFO - _load_comprehensive_openings:264 - Loaded 198 openings into database
-2025-07-31 23:48:09,135 - MainThread - ChessAI - INFO - initialize_systems:145 - Chess AI launcher started
-2025-07-31 23:48:09,145 - MainThread - ChessAI - INFO - validate_config:287 - Configuration validation passed
-2025-07-31 23:48:09,202 - MainThread - ChessAI - INFO - _load_comprehensive_openings:264 - Loaded 297 openings into database
-2025-07-31 23:52:59,477 - MainThread - ChessAI - ERROR - wrapper:163 - Error in failing_function: Test error
-2025-07-31 23:52:59,480 - MainThread - ChessAI - DEBUG - wrapper:164 - Traceback (most recent call last):
+2025-08-02 14:41:58,395 - MainThread - ChessAI - ERROR - wrapper:163 - Error in cleanup: 'Game' object has no attribute 'thread_cleanup_lock'
+2025-08-02 14:41:58,396 - MainThread - ChessAI - DEBUG - wrapper:164 - Traceback (most recent call last):
   File "/Users/shankarprasadsah/Desktop/chess-ai/src/error_handling.py", line 150, in wrapper
     return func(*args, **kwargs)
-  File "/Users/shankarprasadsah/Desktop/chess-ai/test_comprehensive.py", line 53, in failing_function
-    raise ValueError("Test error")
-ValueError: Test error
+  File "/Users/shankarprasadsah/Desktop/chess-ai/src/game.py", line 800, in cleanup
+    with self.thread_cleanup_lock:
+         ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'Game' object has no attribute 'thread_cleanup_lock'
 
-2025-07-31 23:53:00,757 - MainThread - ChessAI - INFO - _load_comprehensive_openings:264 - Loaded 396 openings into database
-2025-07-31 23:53:00,765 - MainThread - ChessAI - INFO - _load_comprehensive_openings:264 - Loaded 495 openings into database
-2025-07-31 23:53:00,767 - MainThread - ChessAI - ERROR - validate_config:289 - Configuration validation failed: ['Missing required section: performance']
-2025-07-31 23:53:00,774 - MainThread - ChessAI - INFO - validate_config:287 - Configuration validation passed
-2025-07-31 23:53:21,575 - MainThread - ChessAI - INFO - initialize_systems:145 - Chess AI launcher started
-2025-07-31 23:53:21,582 - MainThread - ChessAI - INFO - validate_config:287 - Configuration validation passed
-2025-07-31 23:53:21,631 - MainThread - ChessAI - INFO - _load_comprehensive_openings:264 - Loaded 594 openings into database
-2025-07-31 23:54:23,978 - MainThread - ChessAI - INFO - start_analysis:60 - Starting game analysis...
+2025-08-02 14:42:20,879 - MainThread - ChessAI - ERROR - wrapper:163 - Error in cleanup: 'Game' object has no attribute 'thread_cleanup_lock'
+2025-08-02 14:42:20,881 - MainThread - ChessAI - DEBUG - wrapper:164 - Traceback (most recent call last):
+  File "/Users/shankarprasadsah/Desktop/chess-ai/src/error_handling.py", line 150, in wrapper
+    return func(*args, **kwargs)
+  File "/Users/shankarprasadsah/Desktop/chess-ai/src/game.py", line 800, in cleanup
+    with self.thread_cleanup_lock:
+         ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'Game' object has no attribute 'thread_cleanup_lock'
+
+2025-08-02 14:42:26,036 - MainThread - ChessAI - ERROR - wrapper:163 - Error in cleanup: 'Game' object has no attribute 'thread_cleanup_lock'
+2025-08-02 14:42:26,038 - MainThread - ChessAI - DEBUG - wrapper:164 - Traceback (most recent call last):
+  File "/Users/shankarprasadsah/Desktop/chess-ai/src/error_handling.py", line 150, in wrapper
+    return func(*args, **kwargs)
+  File "/Users/shankarprasadsah/Desktop/chess-ai/src/game.py", line 800, in cleanup
+    with self.thread_cleanup_lock:
+         ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'Game' object has no attribute 'thread_cleanup_lock'
+

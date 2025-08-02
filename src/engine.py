@@ -136,17 +136,31 @@ class ChessEngine:
             raise
     
     def _configure_engine_options(self, engine):
-        """Safely configure engine options"""
+        """Configure engine for maximum multi-core performance"""
+        import os
+        cpu_count = os.cpu_count() or 4  # Fallback to 4 if detection fails
+        
         try:
-            # Use proper UCI commands instead of direct stdin access
             if hasattr(engine, '_stockfish') and engine._stockfish:
                 try:
-                    # Send UCI options safely
-                    engine._stockfish.stdin.write("setoption name Threads value 2\n")
+                    # Use all available CPU cores
+                    engine._stockfish.stdin.write(f"setoption name Threads value {cpu_count}\n")
                     engine._stockfish.stdin.flush()
-                    engine._stockfish.stdin.write("setoption name Hash value 128\n")
+                    
+                    # Increase hash table size for better performance (MB)
+                    hash_size = min(512, cpu_count * 64)  # Scale with cores, max 512MB
+                    engine._stockfish.stdin.write(f"setoption name Hash value {hash_size}\n")
                     engine._stockfish.stdin.flush()
-                    logger.info("Engine options configured successfully")
+                    
+                    # Enable multi-PV for parallel analysis
+                    engine._stockfish.stdin.write("setoption name MultiPV value 1\n")
+                    engine._stockfish.stdin.flush()
+                    
+                    # Optimize for analysis
+                    engine._stockfish.stdin.write("setoption name Contempt value 0\n")
+                    engine._stockfish.stdin.flush()
+                    
+                    logger.info(f"Engine optimized for {cpu_count} cores with {hash_size}MB hash")
                     return True
                 except Exception as e:
                     logger.warning(f"Failed to configure engine options: {e}")

@@ -20,13 +20,19 @@ class Dragger:
         # texture
         self.piece.set_texture(size=128)
         texture = self.piece.texture
-        # img
-        img = pygame.image.load(texture)
-        # rect
-        img_center = (self.mouseX, self.mouseY)
-        self.piece.texture_rect = img.get_rect(center=img_center)
-        # blit
-        surface.blit(img, self.piece.texture_rect)
+        try:
+            # img
+            img = pygame.image.load(texture)
+            # rect
+            img_center = (self.mouseX, self.mouseY)
+            self.piece.texture_rect = img.get_rect(center=img_center)
+            # blit
+            surface.blit(img, self.piece.texture_rect)
+        except pygame.error:
+            # Fallback to simple colored circle if image loading fails
+            color = (255, 255, 255) if self.piece.color == 'white' else (0, 0, 0)
+            pygame.draw.circle(surface, color, (self.mouseX, self.mouseY), SQSIZE // 3)
+            pygame.draw.circle(surface, (128, 128, 128), (self.mouseX, self.mouseY), SQSIZE // 3, 2)
 
     # other methods
 
@@ -44,4 +50,10 @@ class Dragger:
     def undrag_piece(self):
         self.piece = None
         self.dragging = False
+        
+    def get_selected_square(self):
+        """Get the currently selected square coordinates"""
+        if self.dragging:
+            return (self.initial_row, self.initial_col)
+        return None
 # [file content end]

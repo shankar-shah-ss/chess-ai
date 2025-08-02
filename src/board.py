@@ -154,11 +154,12 @@ class Board:
                     signature += symbol.upper() if piece.color == 'white' else symbol.lower()
         
         # Castling rights
-        signature += self.castling_rights['K'] and "K" or ""
-        signature += self.castling_rights['Q'] and "Q" or ""
-        signature += self.castling_rights['k'] and "k" or ""
-        signature += self.castling_rights['q'] and "q" or ""
-        signature += "-" if not any(self.castling_rights.values()) else ""
+        castling_str = ""
+        if self.castling_rights['K']: castling_str += "K"
+        if self.castling_rights['Q']: castling_str += "Q"
+        if self.castling_rights['k']: castling_str += "k"
+        if self.castling_rights['q']: castling_str += "q"
+        signature += castling_str if castling_str else "-"
         
         # En passant
         if self.en_passant_target:
@@ -193,13 +194,27 @@ class Board:
         temp_board = copy.deepcopy(self)
         temp_board.move(temp_piece, move, testing=True)
         
+        # Find the king position after the move
+        king_pos = None
+        for row in range(ROWS):
+            for col in range(COLS):
+                p = temp_board.squares[row][col].piece
+                if isinstance(p, King) and p.color == piece.color:
+                    king_pos = (row, col)
+                    break
+            if king_pos:
+                break
+        
+        if not king_pos:
+            return False
+        
         for row in range(ROWS):
             for col in range(COLS):
                 if temp_board.squares[row][col].has_enemy_piece(piece.color):
                     p = temp_board.squares[row][col].piece
                     temp_board.calc_moves(p, row, col, bool=False)
                     for m in p.moves:
-                        if isinstance(m.final.piece, King):
+                        if (m.final.row == king_pos[0] and m.final.col == king_pos[1]):
                             return True
         
         return False
@@ -323,7 +338,8 @@ class Board:
                     # Check if pawn is adjacent to the en passant target column
                     if abs(col - self.en_passant_target.col) == 1:
                         # Check if there's an enemy pawn to capture
-                        enemy_pawn_row = self.en_passant_target.row + (1 if piece.color == 'white' else -1)
+                        # The enemy pawn is on the same row as our pawn (adjacent)
+                        enemy_pawn_row = row
                         if (Square.in_range(enemy_pawn_row, self.en_passant_target.col) and
                             self.squares[enemy_pawn_row][self.en_passant_target.col].has_enemy_piece(piece.color) and
                             isinstance(self.squares[enemy_pawn_row][self.en_passant_target.col].piece, Pawn)):
@@ -549,9 +565,15 @@ class Board:
             if char == '/':
                 row += 1
                 col = 0
+                if row >= ROWS:  # Bounds check
+                    break
             elif char.isdigit():
                 col += int(char)
+                if col >= COLS:  # Bounds check
+                    col = COLS - 1
             else:
+                if row >= ROWS or col >= COLS:  # Bounds check
+                    continue
                 color = 'white' if char.isupper() else 'black'
                 piece_type = char.lower()
                 if piece_type == 'p': piece = Pawn(color)
@@ -586,12 +608,19 @@ class Board:
         # Parse en passant target
         if len(parts) > 3:
             ep_str = parts[3]
-            if ep_str != '-':
-                col_char = ep_str[0]
-                row_char = ep_str[1]
-                ep_col = ord(col_char) - 97  # a=0, b=1, etc.
-                ep_row = 8 - int(row_char)
-                self.en_passant_target = Square(ep_row, ep_col)
+            if ep_str != '-' and len(ep_str) >= 2:
+                try:
+                    col_char = ep_str[0]
+                    row_char = ep_str[1]
+                    ep_col = ord(col_char) - 97  # a=0, b=1, etc.
+                    ep_row = 8 - int(row_char)
+                    # Bounds check
+                    if 0 <= ep_row < ROWS and 0 <= ep_col < COLS:
+                        self.en_passant_target = Square(ep_row, ep_col)
+                    else:
+                        self.en_passant_target = None
+                except (ValueError, IndexError):
+                    self.en_passant_target = None
             else:
                 self.en_passant_target = None
 # [file content end]

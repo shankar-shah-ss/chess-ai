@@ -2,20 +2,17 @@
 import pygame
 import time
 import queue
+import threading
 from threading import Thread, Lock
 from const import *
 from board import Board
 from dragger import Dragger
-from config_manager import config_manager
 from square import Square
 from engine import ChessEngine
 from move import Move
 from piece import King, Pawn
-from notation import ChessNotation
-from pgn_manager import PGNManager
-from move_display import MoveDisplay
 from error_handling import safe_execute, validate_game_state, ErrorRecovery, monitor_performance
-from thread_manager import thread_manager, EngineWorkerThread, EvaluationWorkerThread
+from thread_manager import thread_manager
 from resource_manager import resource_manager
 
 class EngineWorker(Thread):
@@ -26,6 +23,7 @@ class EngineWorker(Thread):
         self.move_queue = move_queue
         self.engine = engine or game.engine  # Use specific engine or fallback
         self.daemon = True
+        self.priority = threading.THREAD_PRIORITY_ABOVE_NORMAL if hasattr(threading, 'THREAD_PRIORITY_ABOVE_NORMAL') else None
 
     def run(self):
         try:
@@ -148,12 +146,43 @@ class Game:
         self.hovered_sqr = None
         self.board = Board()
         self.dragger = Dragger()
-        self.config = config_manager
-        
-        # Notation systems
-        self.notation = ChessNotation(self.board)
-        self.pgn_manager = PGNManager(self.board)
-        self.move_display = MoveDisplay(self.config, self.board)
+        # Theme system with multiple themes
+        from theme import Theme
+        from color import Color
+        self.themes = [
+            Theme(  # Classic
+                light_bg=(240, 217, 181),
+                dark_bg=(181, 136, 99),
+                light_trace=(246, 246, 130),
+                dark_trace=(186, 202, 68),
+                light_moves=(249, 249, 249),
+                dark_moves=(119, 154, 88)
+            ),
+            Theme(  # Blue
+                light_bg=(222, 227, 230),
+                dark_bg=(140, 162, 173),
+                light_trace=(206, 210, 107),
+                dark_trace=(169, 162, 58),
+                light_moves=(255, 255, 255),
+                dark_moves=(100, 149, 237)
+            ),
+            Theme(  # Green
+                light_bg=(238, 238, 210),
+                dark_bg=(118, 150, 86),
+                light_trace=(255, 255, 104),
+                dark_trace=(180, 180, 0),
+                light_moves=(255, 255, 255),
+                dark_moves=(34, 139, 34)
+            )
+        ]
+        self.current_theme = 0
+        self.config = type('Config', (), {
+            'theme': self.themes[self.current_theme],
+            'font': pygame.font.SysFont('Arial', 14),
+            'move_sound': None,
+            'capture_sound': None,
+            'check_sound': None
+        })()
         
         # Enhanced error handling and monitoring
         self._error_recovery = ErrorRecovery()
@@ -163,13 +192,16 @@ class Game:
         self.engine_white = False
         self.engine_black = False
         
-        # Create separate engines for white and black
+        # Create separate engines for white and black with multi-core optimization
         self.engine_creation_lock = Lock()
+        import os
+        cpu_count = os.cpu_count() or 4
         try:
+            # Initialize engines with optimized settings
             self.engine_white_instance = ChessEngine()
             self.engine_black_instance = ChessEngine()
             self.engine = self.engine_white_instance  # Default for compatibility
-            print("✓ Chess engines initialized successfully")
+            print(f"✓ Chess engines initialized for {cpu_count} CPU cores")
         except Exception as e:
             print(f"✗ Failed to initialize chess engines: {e}")
             self.engine_white_instance = None
@@ -191,8 +223,7 @@ class Game:
         self.draw_offer_by = None  # Track who offered the draw
         self.draw_accepted = False  # Track if draw was accepted by mutual agreement
         
-        # Analysis manager (will be set by main)
-        self.analysis_manager = None
+
         
         # Threading with proper cleanup
         self.engine_thread = None
@@ -219,9 +250,7 @@ class Game:
             self.engine_white = True
             self.engine_black = True
 
-    def set_analysis_manager(self, analysis_manager):
-        """Set the analysis manager"""
-        self.analysis_manager = analysis_manager
+
     
     def _get_engine_for_player(self, player):
         """Get the correct engine instance for the given player"""
@@ -256,12 +285,8 @@ class Game:
                     lbl_pos = (col * SQSIZE + 5, HEIGHT - 20)
                     surface.blit(lbl, lbl_pos)
         
-        # Display game info only if not in analysis mode
-        if not (self.analysis_manager and self.analysis_manager.active):
-            self._render_game_status(surface)
-            
-        # Render move display (also hidden during analysis)
-        self.move_display.render(surface, self.analysis_manager and self.analysis_manager.active)
+        # Display game info
+        self._render_game_status(surface)
 
     def _render_game_status(self, surface):
         """Render game status information"""
@@ -321,20 +346,19 @@ class Game:
                 if self.board.squares[row][col].has_piece():
                     piece = self.board.squares[row][col].piece
                     
-                    # Don't draw the piece being dragged
-                    if piece is not self.dragger.piece:
-                        piece.set_texture(size=80)
-                        try:
-                            img = pygame.image.load(piece.texture)
-                            img_center = col * SQSIZE + SQSIZE // 2, row * SQSIZE + SQSIZE // 2
-                            piece.texture_rect = img.get_rect(center=img_center)
-                            surface.blit(img, piece.texture_rect)
-                        except pygame.error:
-                            # Fallback to simple colored circles if image loading fails
-                            color = (255, 255, 255) if piece.color == 'white' else (0, 0, 0)
-                            center = (col * SQSIZE + SQSIZE // 2, row * SQSIZE + SQSIZE // 2)
-                            pygame.draw.circle(surface, color, center, SQSIZE // 3)
-                            pygame.draw.circle(surface, (128, 128, 128), center, SQSIZE // 3, 2)
+                    # Always draw all pieces - no hiding during selection
+                    piece.set_texture(size=80)
+                    try:
+                        img = pygame.image.load(piece.texture)
+                        img_center = col * SQSIZE + SQSIZE // 2, row * SQSIZE + SQSIZE // 2
+                        piece.texture_rect = img.get_rect(center=img_center)
+                        surface.blit(img, piece.texture_rect)
+                    except pygame.error:
+                        # Fallback to simple colored circles if image loading fails
+                        color = (255, 255, 255) if piece.color == 'white' else (0, 0, 0)
+                        center = (col * SQSIZE + SQSIZE // 2, row * SQSIZE + SQSIZE // 2)
+                        pygame.draw.circle(surface, color, center, SQSIZE // 3)
+                        pygame.draw.circle(surface, (128, 128, 128), center, SQSIZE // 3, 2)
 
     def set_hover(self, row, col):
         """Set hovered square for visual feedback"""
@@ -344,35 +368,203 @@ class Game:
             self.hovered_sqr = None
     
     def show_moves(self, surface):
-        """Show possible moves for the selected piece"""
-        theme = self.config.theme
-
+        """Show possible moves for the selected piece with chess.com-style highlighting"""
         if self.dragger.dragging:
             piece = self.dragger.piece
+            
+            # Highlight selected piece square with a bright yellow/green border
+            selected_rect = (self.dragger.initial_col * SQSIZE, self.dragger.initial_row * SQSIZE, SQSIZE, SQSIZE)
+            pygame.draw.rect(surface, (255, 255, 100), selected_rect, 5)  # Bright yellow border
+            
+            # Show possible moves with chess.com-style dots and highlights
             for move in piece.moves:
-                color = theme.moves.light if (move.final.row + move.final.col) % 2 == 0 else theme.moves.dark
-                rect = (move.final.col * SQSIZE, move.final.row * SQSIZE, SQSIZE, SQSIZE)
-                pygame.draw.rect(surface, color, rect)
+                move_col = move.final.col
+                move_row = move.final.row
+                move_rect = (move_col * SQSIZE, move_row * SQSIZE, SQSIZE, SQSIZE)
+                center_x = move_col * SQSIZE + SQSIZE // 2
+                center_y = move_row * SQSIZE + SQSIZE // 2
+                
+                # Check if target square has an opponent piece
+                target_square = self.board.squares[move_row][move_col]
+                has_opponent_piece = target_square.has_piece() and target_square.piece.color != piece.color
+                
+                if has_opponent_piece:
+                    # For capture moves: draw a ring around the piece
+                    pygame.draw.circle(surface, (255, 100, 100, 180), (center_x, center_y), SQSIZE // 2 - 5, 4)
+                    # Add subtle red overlay
+                    capture_surface = pygame.Surface((SQSIZE, SQSIZE), pygame.SRCALPHA)
+                    capture_surface.fill((255, 100, 100, 40))
+                    surface.blit(capture_surface, move_rect)
+                else:
+                    # For regular moves: draw a semi-transparent dot in the center
+                    dot_radius = SQSIZE // 6
+                    dot_surface = pygame.Surface((dot_radius * 2, dot_radius * 2), pygame.SRCALPHA)
+                    pygame.draw.circle(dot_surface, (100, 100, 100, 150), (dot_radius, dot_radius), dot_radius)
+                    dot_rect = dot_surface.get_rect(center=(center_x, center_y))
+                    surface.blit(dot_surface, dot_rect)
+                
+                # Add subtle hover effect for all possible moves
+                hover_surface = pygame.Surface((SQSIZE, SQSIZE), pygame.SRCALPHA)
+                hover_surface.fill((255, 255, 255, 20))
+                surface.blit(hover_surface, move_rect)
+    
+    def show_move_preview(self, surface):
+        """Show temporary move preview for right-clicked pieces"""
+        if hasattr(self, 'move_preview') and self.move_preview:
+            current_time = pygame.time.get_ticks()
+            # Show preview for 2 seconds
+            if current_time - self.move_preview['timestamp'] < 2000:
+                piece = self.move_preview['piece']
+                row = self.move_preview['row']
+                col = self.move_preview['col']
+                
+                # Highlight the piece with a blue border
+                preview_rect = (col * SQSIZE, row * SQSIZE, SQSIZE, SQSIZE)
+                pygame.draw.rect(surface, (100, 150, 255), preview_rect, 3)
+                
+                # Show moves with a different style (more subtle)
+                for move in piece.moves:
+                    move_col = move.final.col
+                    move_row = move.final.row
+                    center_x = move_col * SQSIZE + SQSIZE // 2
+                    center_y = move_row * SQSIZE + SQSIZE // 2
+                    
+                    # Draw smaller, more subtle dots
+                    dot_radius = SQSIZE // 8
+                    pygame.draw.circle(surface, (100, 150, 255, 100), (center_x, center_y), dot_radius)
+            else:
+                # Clear expired preview
+                self.move_preview = None
+    
+    def show_all_moves_hint(self, surface):
+        """Show hint highlighting all pieces that can move"""
+        if hasattr(self, 'all_moves_hint') and self.all_moves_hint:
+            current_time = pygame.time.get_ticks()
+            # Show hint for 3 seconds
+            if current_time - self.all_moves_hint['timestamp'] < 3000:
+                for row, col, piece in self.all_moves_hint['pieces']:
+                    # Pulse effect for movable pieces
+                    import math
+                    pulse_intensity = abs(math.sin((current_time - self.all_moves_hint['timestamp']) * 0.01))
+                    alpha = int(50 + pulse_intensity * 100)
+                    
+                    hint_rect = (col * SQSIZE, row * SQSIZE, SQSIZE, SQSIZE)
+                    hint_surface = pygame.Surface((SQSIZE, SQSIZE), pygame.SRCALPHA)
+                    hint_surface.fill((255, 255, 0, alpha))  # Yellow pulsing highlight
+                    surface.blit(hint_surface, hint_rect)
+                    
+                    # Add a subtle border
+                    pygame.draw.rect(surface, (255, 255, 0, 150), hint_rect, 2)
+            else:
+                # Clear expired hint
+                self.all_moves_hint = None
+    
+    def draw_move_arrow(self, surface, from_pos, to_pos, color=(100, 255, 100), width=4):
+        """Draw an arrow from one position to another"""
+        from_x = from_pos[1] * SQSIZE + SQSIZE // 2
+        from_y = from_pos[0] * SQSIZE + SQSIZE // 2
+        to_x = to_pos[1] * SQSIZE + SQSIZE // 2
+        to_y = to_pos[0] * SQSIZE + SQSIZE // 2
+        
+        # Calculate arrow components
+        import math
+        dx = to_x - from_x
+        dy = to_y - from_y
+        length = math.sqrt(dx*dx + dy*dy)
+        
+        if length > 0:
+            # Normalize direction
+            dx /= length
+            dy /= length
+            
+            # Shorten the arrow to not overlap with pieces
+            margin = SQSIZE // 4
+            start_x = from_x + dx * margin
+            start_y = from_y + dy * margin
+            end_x = to_x - dx * margin
+            end_y = to_y - dy * margin
+            
+            # Draw main line
+            pygame.draw.line(surface, color, (start_x, start_y), (end_x, end_y), width)
+            
+            # Draw arrowhead
+            arrow_length = 15
+            arrow_angle = 0.5
+            
+            # Calculate arrowhead points
+            head_x1 = end_x - arrow_length * math.cos(math.atan2(dy, dx) - arrow_angle)
+            head_y1 = end_y - arrow_length * math.sin(math.atan2(dy, dx) - arrow_angle)
+            head_x2 = end_x - arrow_length * math.cos(math.atan2(dy, dx) + arrow_angle)
+            head_y2 = end_y - arrow_length * math.sin(math.atan2(dy, dx) + arrow_angle)
+            
+            # Draw arrowhead
+            pygame.draw.polygon(surface, color, [(end_x, end_y), (head_x1, head_y1), (head_x2, head_y2)])
 
     def show_last_move(self, surface):
-        """Highlight the last move made"""
+        """Highlight the last move made with squares and arrow"""
         theme = self.config.theme
 
         if self.board.last_move:
             initial = self.board.last_move.initial
             final = self.board.last_move.final
 
+            # Highlight squares
             for pos in [initial, final]:
                 color = theme.trace.light if (pos.row + pos.col) % 2 == 0 else theme.trace.dark
                 rect = (pos.col * SQSIZE, pos.row * SQSIZE, SQSIZE, SQSIZE)
                 pygame.draw.rect(surface, color, rect)
+            
+            # Draw arrow for the last move
+            self.draw_move_arrow(surface, (initial.row, initial.col), (final.row, final.col), 
+                               color=(255, 255, 100, 180), width=3)
 
     def show_hover(self, surface):
-        """Show hover effect on squares"""
+        """Show hover effect on squares with enhanced visual feedback"""
         if self.hovered_sqr:
-            color = (180, 180, 180)
-            rect = (self.hovered_sqr.col * SQSIZE, self.hovered_sqr.row * SQSIZE, SQSIZE, SQSIZE)
-            pygame.draw.rect(surface, color, rect, width=3)
+            # Different hover colors based on context
+            if self.dragger.dragging:
+                # If a piece is selected, show different hover for valid moves
+                piece = self.dragger.piece
+                hovered_move = None
+                
+                # Check if hovered square is a valid move
+                for move in piece.moves:
+                    if move.final.row == self.hovered_sqr.row and move.final.col == self.hovered_sqr.col:
+                        hovered_move = move
+                        break
+                
+                if hovered_move:
+                    # Valid move hover - green tint
+                    color = (100, 255, 100, 80)
+                    hover_surface = pygame.Surface((SQSIZE, SQSIZE), pygame.SRCALPHA)
+                    hover_surface.fill(color)
+                    rect = (self.hovered_sqr.col * SQSIZE, self.hovered_sqr.row * SQSIZE, SQSIZE, SQSIZE)
+                    surface.blit(hover_surface, rect)
+                    pygame.draw.rect(surface, (100, 255, 100), rect, width=3)
+                else:
+                    # Invalid move hover - subtle red tint
+                    color = (255, 100, 100, 40)
+                    hover_surface = pygame.Surface((SQSIZE, SQSIZE), pygame.SRCALPHA)
+                    hover_surface.fill(color)
+                    rect = (self.hovered_sqr.col * SQSIZE, self.hovered_sqr.row * SQSIZE, SQSIZE, SQSIZE)
+                    surface.blit(hover_surface, rect)
+            else:
+                # Normal hover when no piece is selected
+                if self.hovered_sqr.has_piece() and self.hovered_sqr.piece.color == self.next_player:
+                    # Hovering over own piece - blue tint
+                    color = (100, 150, 255, 60)
+                    hover_surface = pygame.Surface((SQSIZE, SQSIZE), pygame.SRCALPHA)
+                    hover_surface.fill(color)
+                    rect = (self.hovered_sqr.col * SQSIZE, self.hovered_sqr.row * SQSIZE, SQSIZE, SQSIZE)
+                    surface.blit(hover_surface, rect)
+                    pygame.draw.rect(surface, (100, 150, 255), rect, width=2)
+                else:
+                    # General hover
+                    color = (180, 180, 180, 40)
+                    hover_surface = pygame.Surface((SQSIZE, SQSIZE), pygame.SRCALPHA)
+                    hover_surface.fill(color)
+                    rect = (self.hovered_sqr.col * SQSIZE, self.hovered_sqr.row * SQSIZE, SQSIZE, SQSIZE)
+                    surface.blit(hover_surface, rect)
             
     def show_check(self, surface):
         """Highlight king in check"""
@@ -400,7 +592,8 @@ class Game:
 
     def change_theme(self):
         """Change the board theme"""
-        self.config.change_theme()
+        self.current_theme = (self.current_theme + 1) % len(self.themes)
+        self.config.theme = self.themes[self.current_theme]
 
     def play_sound(self, captured=False):
         """Play move or capture sound"""
@@ -431,9 +624,7 @@ class Game:
         self.set_engine_level(current_level)
         self.set_engine_depth(current_depth)
         
-        # Reset notation systems
-        self.pgn_manager.reset()
-        self.move_display.clear_history()
+
 
     # Engine control methods
     def toggle_engine(self, color):
@@ -713,10 +904,7 @@ class Game:
         # Get evaluation before move (if available)
         eval_before = self.evaluation.copy() if self.evaluation else None
         
-        # Record position before move for analysis
-        if self.analysis_manager:
-            position_before = self.board.to_fen(piece.color)
-            self.analysis_manager.record_move(move, piece.color, position_before)
+
         
         # Make the actual move
         self.board.move(piece, move)
@@ -733,23 +921,11 @@ class Game:
             self.schedule_evaluation()
             eval_after = self.evaluation.copy()
         
-        # Record move in PGN
-        algebraic_notation = self.pgn_manager.add_move(
-            move, piece, captured, is_check, is_checkmate
-        )
-        
-        # Add to move display
-        self.move_display.add_move(
-            move, piece, captured, is_check, is_checkmate,
-            eval_before=eval_before, eval_after=eval_after
-        )
-        
         # Record move in history
         self.move_history.append({
             'move': move,
             'piece': piece.name,
             'color': piece.color,
-            'notation': algebraic_notation,
             'captured': captured
         })
         
@@ -800,9 +976,7 @@ class Game:
         # Instructions
         instruction_font = pygame.font.SysFont('Segoe UI', 20)
         instructions = [
-            "Press 'R' to restart",
-            "Press 'A' for analysis",
-            "Press 'S' for summary"
+            "Press 'R' to restart"
         ]
         
         y_offset = HEIGHT//2 + 20
@@ -812,39 +986,7 @@ class Game:
             surface.blit(instruction_surface, instruction_rect)
             y_offset += 35
 
-    def export_pgn(self, filename, include_analysis=False):
-        """Export game to PGN file"""
-        # Set game result based on current state
-        if self.game_over:
-            if self.winner == 'white':
-                self.pgn_manager.set_result('1-0')
-            elif self.winner == 'black':
-                self.pgn_manager.set_result('0-1')
-            else:
-                self.pgn_manager.set_result('1/2-1/2')
-        
-        # Set player names based on game mode
-        if self.game_mode == 0:  # Human vs Human
-            self.pgn_manager.set_game_info(White='Human', Black='Human')
-        elif self.game_mode == 1:  # Human vs Engine
-            self.pgn_manager.set_game_info(White='Human', Black='Engine')
-        elif self.game_mode == 2:  # Engine vs Engine
-            self.pgn_manager.set_game_info(White='Engine', Black='Engine')
-        
-        # Get analysis data if requested
-        analysis_data = None
-        if include_analysis and self.analysis_manager:
-            analysis_data = self.analysis_manager.get_analysis_stats()
-        
-        return self.pgn_manager.save_to_file(filename, include_analysis, analysis_data)
-    
-    def import_pgn(self, filename):
-        """Import game from PGN file"""
-        return self.pgn_manager.load_from_file(filename)
-    
-    def get_current_pgn(self):
-        """Get current game as PGN string"""
-        return self.pgn_manager.get_pgn_string()
+
     
     def _validate_fen(self, fen):
         """Validate FEN string"""
@@ -894,10 +1036,7 @@ class Game:
             if hasattr(self, 'engine_black_instance') and self.engine_black_instance:
                 self.engine_black_instance.cleanup()
             
-            # Cleanup analysis manager
-            if hasattr(self, 'analysis_manager') and self.analysis_manager:
-                if hasattr(self.analysis_manager, 'cleanup'):
-                    self.analysis_manager.cleanup()
+
     
     @safe_execute(fallback_value=False, context="game_validation")
     def validate_game_state(self):

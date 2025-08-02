@@ -1,4 +1,3 @@
-# main.py - Updated with Modern Analysis System Integration
 import pygame
 import sys
 import os
@@ -7,7 +6,7 @@ from const import *
 from game import Game
 from square import Square
 from move import Move
-from analysis_manager import AnalysisManager
+
 
 class Main:
     def __init__(self):
@@ -17,16 +16,14 @@ class Main:
         self.game = Game()
         self.clock = pygame.time.Clock()
         
-        # Initialize modern analysis manager
-        self.analysis_manager = AnalysisManager(self.game.config, self.game.engine)
-        
-        # Connect analysis manager to game
-        self.game.set_analysis_manager(self.analysis_manager)
+
         
         # UI state
         self.show_game_info = True
         self.show_help = False
         self.initial_fen = None
+        self.last_click_time = 0
+        self.click_debounce = 100  # milliseconds - reduced for better responsiveness
         
         # Enhanced resource management
         from resource_manager import resource_manager
@@ -43,7 +40,7 @@ class Main:
         game = self.game
         board = self.game.board
         dragger = self.game.dragger
-        analysis_manager = self.analysis_manager
+
 
         # Set initial game mode
         game.set_game_mode(0)  # Start with human vs human
@@ -60,7 +57,7 @@ class Main:
             # Process engine moves (highest priority)
             if hasattr(game, 'engine_thread') and game.engine_thread:
                 if game.make_engine_move():
-                    self._render_game_state(screen, game, dragger, analysis_manager)
+                    self._render_game_state(screen, game, dragger)
                     pygame.display.flip()  # Faster than update()
                     continue
 
@@ -70,36 +67,11 @@ class Main:
                     game.evaluation = game.evaluation_thread.evaluation
                 game.evaluation_thread = None
 
-            # Handle analysis mode rendering
-            if analysis_manager.active:
-                # Render using the analysis manager
-                analysis_manager.render(screen)
-                pygame.display.flip()
-                    
-                # Process events for analysis mode
-                for event in pygame.event.get():
-                    # Handle analysis manager input
-                    if analysis_manager.handle_input(event):
-                        continue
-                        
-                    # Handle global keys
-                    if event.type == pygame.KEYDOWN:
-                        if event.key == pygame.K_r:
-                            self._reset_game(game, analysis_manager)
-                        elif event.key == pygame.K_F11:
-                            self._toggle_fullscreen()
-                        elif event.key == pygame.K_ESCAPE:
-                            analysis_manager.exit_analysis_mode()
-                        elif event.key == pygame.K_s:
-                            if analysis_manager.is_analysis_complete():
-                                analysis_manager.toggle_summary()
-                    elif event.type == pygame.QUIT:
-                        self._cleanup_and_exit()
-                continue
+
 
             # Handle game over state
             if game.game_over:
-                self._render_game_state(screen, game, dragger, analysis_manager)
+                self._render_game_state(screen, game, dragger)
                 self._render_game_over_overlay(screen, game)
                 pygame.display.flip()
                 
@@ -107,12 +79,7 @@ class Main:
                 for event in pygame.event.get():
                     if event.type == pygame.KEYDOWN:
                         if event.key == pygame.K_r:
-                            self._reset_game(game, analysis_manager)
-                        elif event.key == pygame.K_a:
-                            analysis_manager.enter_analysis_mode()
-                        elif event.key == pygame.K_s:
-                            if analysis_manager.is_analysis_complete():
-                                analysis_manager.toggle_summary()
+                            self._reset_game(game)
                         elif event.key == pygame.K_F11:
                             self._toggle_fullscreen()
                     elif event.type == pygame.QUIT:
@@ -126,36 +93,35 @@ class Main:
                     game.schedule_engine_move()
 
             # Render normal game state
-            self._render_game_state(screen, game, dragger, analysis_manager)
-
-            if dragger.dragging:
-                dragger.update_blit(screen)
+            self._render_game_state(screen, game, dragger)
 
             # Handle game events
             for event in pygame.event.get():
-                if self._handle_game_event(event, game, board, dragger, analysis_manager):
+                if self._handle_game_event(event, game, board, dragger):
                     continue
             
             pygame.display.flip()
 
-    def _render_game_state(self, screen, game, dragger, analysis_manager):
+    def _render_game_state(self, screen, game, dragger):
         """Render the main game state with modern styling"""
         game.show_bg(screen)
         game.show_last_move(screen)
+        game.show_all_moves_hint(screen)  # Show all moves hint
+        game.show_move_preview(screen)  # Show move preview before selected moves
         game.show_moves(screen)
         game.show_check(screen)
         game.show_pieces(screen)
         game.show_hover(screen)
         
-        # Show modern game info panel if not in analysis mode
-        if not analysis_manager.active and self.show_game_info:
-            self._render_modern_game_info(screen, game, analysis_manager)
+        # Show modern game info panel
+        if self.show_game_info:
+            self._render_modern_game_info(screen, game)
         
         # Show help overlay if requested
         if self.show_help:
             self._render_help_overlay(screen)
 
-    def _render_modern_game_info(self, screen, game, analysis_manager):
+    def _render_modern_game_info(self, screen, game):
         """Render modern game information panel"""
         # Info panel background
         panel_width = 320
@@ -233,6 +199,19 @@ class Main:
         if game.engine_white or game.engine_black:
             engine_hint = hint_font.render("+/-: Level, Ctrl+↑/↓: Depth", True, (181, 181, 181))
             screen.blit(engine_hint, (panel_x + 20, panel_y + 170))
+        
+        # System info display
+        import threading
+        import os
+        thread_count = threading.active_count()
+        cpu_count = os.cpu_count() or 4
+        
+        info_font = self._get_cached_font('Segoe UI', 11)
+        thread_surface = info_font.render(f"Threads: {thread_count}", True, (100, 149, 237))
+        screen.blit(thread_surface, (panel_x + 200, panel_y + 170))
+        
+        cpu_surface = info_font.render(f"Cores: {cpu_count}", True, (255, 165, 0))
+        screen.blit(cpu_surface, (panel_x + 200, panel_y + 185))
     
     def _render_help_overlay(self, screen):
         """Render help overlay with all controls"""
@@ -282,11 +261,12 @@ class Main:
             ("H", "Show/hide this help"),
             ("F11", "Toggle fullscreen"),
             ("", ""),
-            ("Analysis (after game):", ""),
-            ("A", "Enter analysis mode"),
-            ("S", "Show summary"),
-            ("←/→", "Navigate moves"),
-            ("Space", "Auto-play moves")
+            ("Click-to-Move:", ""),
+            ("Left Click", "Select piece / Make move"),
+            ("Right Click", "Preview piece moves"),
+            ("ESC", "Deselect piece"),
+            ("SPACE", "Show all movable pieces"),
+
         ]
         
         y_offset = panel_y + 70
@@ -334,10 +314,9 @@ class Main:
         text_rect = text_surface.get_rect(center=(WIDTH//2, HEIGHT//2))
         screen.blit(text_surface, text_rect)
     
-    def _reset_game(self, game, analysis_manager):
+    def _reset_game(self, game):
         """Reset the game"""
         try:
-            analysis_manager.reset()
             game.reset()
         except Exception as e:
             print(f"Error resetting: {e}")
@@ -359,10 +338,7 @@ class Main:
             if hasattr(self, 'game'):
                 self.game.cleanup()
             
-            # Cleanup analysis manager
-            if hasattr(self, 'analysis_manager'):
-                if hasattr(self.analysis_manager, 'cleanup'):
-                    self.analysis_manager.cleanup()
+
             
             # Cleanup resource manager
             if hasattr(self, 'resource_manager'):
@@ -384,21 +360,59 @@ class Main:
             pygame.quit()
             sys.exit()
     
-    def _handle_game_event(self, event, game, board, dragger, analysis_manager):
-        """Handle game events"""
+    def _handle_game_event(self, event, game, board, dragger):
+        """Handle game events with enhanced click-to-move functionality"""
         if event.type == pygame.MOUSEBUTTONDOWN:
-            dragger.update_mouse(event.pos)
-            clicked_row = dragger.mouseY // SQSIZE
-            clicked_col = dragger.mouseX // SQSIZE
+            # Debounce clicks to prevent double-clicking issues
+            current_time = pygame.time.get_ticks()
+            if current_time - self.last_click_time < self.click_debounce:
+                return False
+            self.last_click_time = current_time
             
-            if 0 <= clicked_row < 8 and 0 <= clicked_col < 8:
-                square = board.squares[clicked_row][clicked_col]
-                if square.has_piece():
-                    piece = square.piece
-                    if piece.color == game.next_player:
-                        board.calc_moves(piece, clicked_row, clicked_col, bool=True)
-                        dragger.save_initial(event.pos)
-                        dragger.drag_piece(piece)
+            # Only allow human moves when it's not engine's turn
+            is_engine_turn = (game.next_player == 'white' and game.engine_white) or \
+                           (game.next_player == 'black' and game.engine_black)
+            
+            if not is_engine_turn:
+                clicked_row = event.pos[1] // SQSIZE
+                clicked_col = event.pos[0] // SQSIZE
+                
+                # Check if click is within the board
+                if 0 <= clicked_row < 8 and 0 <= clicked_col < 8:
+                    square = board.squares[clicked_row][clicked_col]
+                    
+                    # Handle right-click for move preview
+                    if event.button == 3:  # Right click
+                        if square.has_piece() and square.piece.color == game.next_player:
+                            self._show_move_preview(game, board, square, clicked_row, clicked_col)
+                        return False
+                    
+                    # Handle left-click for selection and moves
+                    elif event.button == 1:  # Left click
+                        # If no piece is selected
+                        if not dragger.dragging:
+                            # Select piece if it belongs to current player
+                            if square.has_piece() and square.piece.color == game.next_player:
+                                self._select_piece(game, board, dragger, square, clicked_row, clicked_col)
+                        
+                        # If a piece is already selected
+                        else:
+                            # If clicking on same square, deselect
+                            if clicked_row == dragger.initial_row and clicked_col == dragger.initial_col:
+                                self._deselect_piece(dragger)
+                            
+                            # If clicking on another piece of same color, select it instead
+                            elif square.has_piece() and square.piece.color == game.next_player:
+                                self._select_piece(game, board, dragger, square, clicked_row, clicked_col)
+                            
+                            # If clicking on opponent piece or empty square, try to move
+                            else:
+                                self._attempt_move(game, board, dragger, clicked_row, clicked_col)
+                
+                # If clicking outside board, deselect piece
+                else:
+                    if dragger.dragging:
+                        self._deselect_piece(dragger)
         
         elif event.type == pygame.MOUSEMOTION:
             if dragger.dragging:
@@ -409,28 +423,14 @@ class Main:
                 game.set_hover(motion_row, motion_col)
                     
         elif event.type == pygame.MOUSEBUTTONUP:
-            if dragger.dragging:
-                dragger.update_mouse(event.pos)
-                released_row = dragger.mouseY // SQSIZE
-                released_col = dragger.mouseX // SQSIZE
-                
-                if 0 <= released_row < 8 and 0 <= released_col < 8:
-                    initial = Square(dragger.initial_row, dragger.initial_col)
-                    final = Square(released_row, released_col)
-                    move = Move(initial, final)
-                    
-                    if board.valid_move(dragger.piece, move):
-                        game.make_move(dragger.piece, move)
-                    
-            dragger.undrag_piece()
+            # No action needed for click-to-move style
+            pass
             
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_t:
                 game.change_theme()
             elif event.key == pygame.K_r:
-                self._reset_game(game, analysis_manager)
-            elif event.key == pygame.K_a and game.game_over:
-                analysis_manager.enter_analysis_mode()
+                self._reset_game(game)
             
             # Game mode switching
             elif event.key == pygame.K_1:
@@ -458,6 +458,15 @@ class Main:
             elif event.key == pygame.K_b:
                 game.toggle_engine('black')
             
+            # Click-to-move enhancements
+            elif event.key == pygame.K_ESCAPE:
+                # Deselect piece with Escape key
+                if dragger.dragging:
+                    self._deselect_piece(dragger)
+            elif event.key == pygame.K_SPACE:
+                # Show all possible moves for current player's pieces
+                self._show_all_moves_hint(game, board)
+            
             # Other features
             elif event.key == pygame.K_F11:
                 self._toggle_fullscreen()
@@ -471,6 +480,85 @@ class Main:
             sys.exit()
             
         return False
+    
+    def _select_piece(self, game, board, dragger, square, row, col):
+        """Select a piece and calculate its possible moves"""
+        # Calculate possible moves for the piece
+        board.calc_moves(square.piece, row, col, bool=True)
+        
+        # Set dragger state
+        dragger.initial_row = row
+        dragger.initial_col = col
+        dragger.piece = square.piece
+        dragger.dragging = True
+        
+        # Play selection sound if available
+        if hasattr(game, 'sound_manager') and game.sound_manager:
+            game.sound_manager.play_select()
+    
+    def _deselect_piece(self, dragger):
+        """Deselect the currently selected piece"""
+        dragger.undrag_piece()
+    
+    def _attempt_move(self, game, board, dragger, target_row, target_col):
+        """Attempt to move the selected piece to the target square"""
+        initial = Square(dragger.initial_row, dragger.initial_col)
+        final = Square(target_row, target_col)
+        move = Move(initial, final)
+        
+        # Check if the move is valid
+        if board.valid_move(dragger.piece, move):
+            # Make the move
+            game.make_move(dragger.piece, move)
+            # Deselect the piece
+            dragger.undrag_piece()
+        else:
+            # Invalid move - provide visual feedback
+            self._show_invalid_move_feedback(target_row, target_col)
+            # Keep piece selected for another attempt
+    
+    def _show_invalid_move_feedback(self, row, col):
+        """Show visual feedback for invalid moves"""
+        # This could be enhanced with a red flash or shake animation
+        # For now, we'll just keep the piece selected
+        pass
+    
+    def _show_move_preview(self, game, board, square, row, col):
+        """Show move preview for right-clicked piece (temporary highlight)"""
+        # Calculate moves for the piece
+        board.calc_moves(square.piece, row, col, bool=True)
+        
+        # Store the preview state temporarily
+        if not hasattr(game, 'move_preview'):
+            game.move_preview = {}
+        
+        game.move_preview = {
+            'piece': square.piece,
+            'row': row,
+            'col': col,
+            'timestamp': pygame.time.get_ticks()
+        }
+    
+    def _show_all_moves_hint(self, game, board):
+        """Show hint highlighting all pieces that can move"""
+        if not hasattr(game, 'all_moves_hint'):
+            game.all_moves_hint = {}
+        
+        # Find all pieces that can move for current player
+        movable_pieces = []
+        for row in range(8):
+            for col in range(8):
+                square = board.squares[row][col]
+                if square.has_piece() and square.piece.color == game.next_player:
+                    # Calculate moves for this piece
+                    board.calc_moves(square.piece, row, col, bool=True)
+                    if square.piece.moves:  # If piece has valid moves
+                        movable_pieces.append((row, col, square.piece))
+        
+        game.all_moves_hint = {
+            'pieces': movable_pieces,
+            'timestamp': pygame.time.get_ticks()
+        }
 
 if __name__ == '__main__':
     main = Main()
