@@ -32,9 +32,54 @@ class PGNManager:
         self.nags = {}  # Numeric Annotation Glyphs {move_index: nag_code}
         self.variations = {}  # Alternative move sequences {move_index: [variation_moves]}
         
-        # Ensure games directory exists
+        # Ensure games directory exists with categorized subdirectories
         self.games_dir = os.path.join(os.path.dirname(__file__), '..', 'games')
+        self.create_categorized_directories()
+    
+    def create_categorized_directories(self):
+        """Create categorized directories for different game modes"""
+        # Main games directory
         os.makedirs(self.games_dir, exist_ok=True)
+        
+        # Categorized subdirectories
+        categories = [
+            'human-vs-human',
+            'human-vs-engine', 
+            'engine-vs-engine'
+        ]
+        
+        for category in categories:
+            category_dir = os.path.join(self.games_dir, category)
+            os.makedirs(category_dir, exist_ok=True)
+        
+        # Only print on first creation
+        if not hasattr(self, '_directories_created'):
+            print("📁 Game directories initialized:")
+            print(f"  📂 human-vs-human")
+            print(f"  📂 human-vs-engine") 
+            print(f"  📂 engine-vs-engine")
+            self._directories_created = True
+    
+    def get_game_category_dir(self):
+        """Determine the appropriate directory based on game type"""
+        white_player = self.headers.get('White', 'Human')
+        black_player = self.headers.get('Black', 'Human')
+        
+        # Determine category based on player types
+        white_is_engine = white_player.lower() == 'engine'
+        black_is_engine = black_player.lower() == 'engine'
+        
+        if white_is_engine and black_is_engine:
+            category = 'engine-vs-engine'
+        elif white_is_engine or black_is_engine:
+            category = 'human-vs-engine'
+        else:
+            category = 'human-vs-human'
+        
+        category_dir = os.path.join(self.games_dir, category)
+        os.makedirs(category_dir, exist_ok=True)  # Ensure directory exists
+        
+        return category_dir, category
     
     def start_new_game(self, white_player: str = "Human", black_player: str = "Human", 
                       event: str = "Casual Game", site: str = "Chess AI"):
@@ -431,14 +476,81 @@ class PGNManager:
         return lines
     
     def save_pgn_dialog(self) -> bool:
-        """Save PGN with macOS-safe dialog system"""
-        try:
-            # Try macOS native dialog first
-            return self._try_macos_dialog()
-        except Exception as e:
-            print(f"macOS dialog failed: {e}")
-            # Fallback to console input
-            return self._console_save_fallback()
+        """Save PGN with macOS-safe dialog system (non-blocking)"""
+        import threading
+        
+        def save_async():
+            """Async save function to prevent UI blocking"""
+            try:
+                # Try macOS native dialog first
+                success = self._try_macos_dialog()
+                if not success:
+                    # Fallback to console input
+                    success = self._console_save_fallback()
+                return success
+            except Exception as e:
+                print(f"PGN save error: {e}")
+                return False
+        
+        # Run save operation in background thread
+        save_thread = threading.Thread(target=save_async, daemon=True)
+        save_thread.start()
+        
+        # Return immediately to prevent UI blocking
+        print("📝 Saving game in background...")
+        return True
+    
+    def save_pgn_quick(self, custom_filename=None) -> bool:
+        """Quick save without dialogs (non-blocking)"""
+        import threading
+        
+        def quick_save():
+            """Quick save function"""
+            try:
+                # Generate filename
+                if custom_filename:
+                    filename = custom_filename
+                else:
+                    date_str = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                    white = self.headers.get('White', 'Player1')
+                    black = self.headers.get('Black', 'Player2')
+                    filename = f"{white}_vs_{black}_{date_str}.pgn"
+                
+                # Ensure .pgn extension
+                if not filename.endswith('.pgn'):
+                    filename += '.pgn'
+                
+                # Get categorized directory
+                category_dir, category = self.get_game_category_dir()
+                
+                # Save file in appropriate category directory
+                filepath = os.path.join(category_dir, filename)
+                
+                # Handle existing files by adding number suffix
+                counter = 1
+                original_filepath = filepath
+                while os.path.exists(filepath):
+                    name_part = original_filepath.replace('.pgn', '')
+                    filepath = f"{name_part}_{counter}.pgn"
+                    counter += 1
+                
+                # Write PGN file
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(self.generate_pgn())
+                
+                print(f"✅ Game saved to {category}: {filepath}")
+                return True
+                
+            except Exception as e:
+                print(f"❌ Quick save failed: {e}")
+                return False
+        
+        # Run save operation in background thread
+        save_thread = threading.Thread(target=quick_save, daemon=True)
+        save_thread.start()
+        
+        print("📝 Quick saving game...")
+        return True
     
     def _try_macos_dialog(self) -> bool:
         """Try macOS native save dialog using osascript"""
@@ -495,8 +607,11 @@ class PGNManager:
             if not filename.endswith('.pgn'):
                 filename += '.pgn'
             
-            # Save file
-            filepath = os.path.join(self.games_dir, filename)
+            # Get categorized directory
+            category_dir, category = self.get_game_category_dir()
+            
+            # Save file in appropriate category directory
+            filepath = os.path.join(category_dir, filename)
             
             # Check if file exists
             if os.path.exists(filepath):
@@ -521,14 +636,14 @@ class PGNManager:
             # Show success message
             success_script = f'''
             tell application "System Events"
-                display dialog "Game saved successfully as:\\n{filepath}" buttons {{"OK"}} with title "Game Saved"
+                display dialog "Game saved successfully to {category}:\\n{filepath}" buttons {{"OK"}} with title "Game Saved"
             end tell
             '''
             
             subprocess.run(['osascript', '-e', success_script], 
                          capture_output=True, text=True, timeout=5)
             
-            print(f"✅ PGN saved: {filepath}")
+            print(f"✅ PGN saved to {category}: {filepath}")
             return True
             
         except subprocess.TimeoutExpired:
@@ -567,9 +682,11 @@ class PGNManager:
             if not filename.endswith('.pgn'):
                 filename += '.pgn'
             
-            # Save file
-            os.makedirs(self.games_dir, exist_ok=True)
-            filepath = os.path.join(self.games_dir, filename)
+            # Get categorized directory
+            category_dir, category = self.get_game_category_dir()
+            
+            # Save file in appropriate category directory
+            filepath = os.path.join(category_dir, filename)
             
             # Check if file exists
             if os.path.exists(filepath):
@@ -582,7 +699,7 @@ class PGNManager:
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(self.generate_pgn())
             
-            print(f"✅ Game saved successfully: {filepath}")
+            print(f"✅ Game saved successfully to {category}: {filepath}")
             print("="*50)
             return True
             
@@ -782,11 +899,18 @@ class PGNIntegration:
         print(f"📝 Game ended: {result} ({reason})")
     
     def save_game(self) -> bool:
-        """Save the current game with dialog"""
+        """Save the current game with dialog (non-blocking)"""
         if not self.recording or self.pgn_manager.get_move_count() == 0:
             return False
         
         return self.pgn_manager.save_pgn_dialog()
+    
+    def save_game_quick(self, filename=None) -> bool:
+        """Quick save without dialogs (non-blocking)"""
+        if not self.recording or self.pgn_manager.get_move_count() == 0:
+            return False
+        
+        return self.pgn_manager.save_pgn_quick(filename)
     
     def get_move_count(self) -> int:
         """Get total number of moves"""

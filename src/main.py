@@ -271,7 +271,8 @@ class Main:
             ("I", "Toggle info panel"),
             ("H", "Show/hide this help"),
             ("F11", "Toggle fullscreen"),
-            ("Ctrl+S", "Save game as PGN"),
+            ("Ctrl+S", "Quick save PGN (no dialogs)"),
+            ("Shift+S", "Save PGN with dialog"),
             ("", ""),
             ("Chess.com Style Controls:", ""),
             ("Left Click", "Select piece (if has moves) / Make move"),
@@ -476,6 +477,14 @@ class Main:
                 # Show all possible moves for current player's pieces
                 self._show_all_moves_hint(game, board)
             
+            # PGN save shortcuts
+            elif event.key == pygame.K_s and pygame.key.get_pressed()[pygame.K_LCTRL]:
+                # Ctrl+S for quick save (no dialogs)
+                self._quick_save_pgn(game)
+            elif event.key == pygame.K_s and pygame.key.get_pressed()[pygame.K_LSHIFT]:
+                # Shift+S for save with dialog
+                self._save_pgn(game)
+            
             # Other features
             elif event.key == pygame.K_F11:
                 self._toggle_fullscreen()
@@ -483,9 +492,6 @@ class Main:
                 self.show_game_info = not self.show_game_info
             elif event.key == pygame.K_h:
                 self.show_help = not self.show_help
-            elif event.key == pygame.K_s and pygame.key.get_pressed()[pygame.K_LCTRL]:
-                # Ctrl+S to save PGN
-                self._save_pgn(game)
                 
         elif event.type == pygame.QUIT:
             pygame.quit()
@@ -589,7 +595,7 @@ class Main:
         }
     
     def _save_pgn(self, game):
-        """Save PGN with user dialog"""
+        """Save PGN with user dialog (non-blocking)"""
         try:
             if game.pgn.get_move_count() == 0:
                 print("No moves to save")
@@ -597,11 +603,26 @@ class Main:
             
             success = game.pgn.save_game()
             if success:
-                print("✅ PGN saved successfully")
+                print("✅ PGN save started (background)")
             else:
                 print("❌ PGN save cancelled or failed")
         except Exception as e:
             print(f"Error saving PGN: {e}")
+    
+    def _quick_save_pgn(self, game):
+        """Quick save PGN without dialogs (non-blocking)"""
+        try:
+            if game.pgn.get_move_count() == 0:
+                print("No moves to save")
+                return
+            
+            success = game.pgn.save_game_quick()
+            if success:
+                print("✅ Quick save started (background)")
+            else:
+                print("❌ Quick save failed")
+        except Exception as e:
+            print(f"Error quick saving PGN: {e}")
     
     def _offer_save_pgn(self, game):
         """Offer to save PGN when game ends (runs in separate thread)"""
