@@ -112,17 +112,19 @@ class ChessEngine:
             if not engine or not self._test_engine_health(engine):
                 raise Exception("Engine failed health check")
                 
-            # Configure for maximum strength at level 20
+            # Configure for maximum strength at level 20 (with reasonable limits)
             if skill_level >= 20:
                 if depth >= 20:
-                    engine.set_depth(0)  # 0 = unlimited depth in Stockfish
+                    # Cap maximum depth to prevent infinite thinking
+                    max_depth = min(depth, 25)  # Maximum 25 ply depth
+                    engine.set_depth(max_depth)
+                    print(f"Engine configured for MAXIMUM STRENGTH (level {skill_level}, depth {max_depth})")
                 else:
                     engine.set_depth(depth)
+                    print(f"Engine configured for HIGH STRENGTH (level {skill_level}, depth {depth})")
                     
                 # Configure for maximum performance using safe methods
                 self._configure_engine_options(engine)
-                    
-                print(f"Engine configured for UNLIMITED STRENGTH (level {skill_level})")
             else:
                 # Normal skill level mode
                 engine.set_skill_level(skill_level)
@@ -200,8 +202,10 @@ class ChessEngine:
                 return
             try:
                 if self.skill_level >= 20 and depth >= 20:
-                    self.engine.set_depth(0)  # 0 = unlimited depth
-                    print(f"Engine set to UNLIMITED DEPTH (depth {depth})")
+                    # Cap maximum depth to prevent infinite thinking
+                    max_depth = min(depth, 25)  # Maximum 25 ply depth
+                    self.engine.set_depth(max_depth)
+                    print(f"Engine set to MAXIMUM DEPTH (depth {max_depth}, requested {depth})")
                 else:
                     self.engine.set_depth(depth)
             except Exception as e:
@@ -209,8 +213,9 @@ class ChessEngine:
                 if self._recover_engine() and self.engine:
                     try:
                         if self.skill_level >= 20 and depth >= 20:
-                            self.engine.set_depth(0)
-                            print(f"Engine set to UNLIMITED DEPTH (depth {depth}) after recovery")
+                            max_depth = min(depth, 25)
+                            self.engine.set_depth(max_depth)
+                            print(f"Engine set to MAXIMUM DEPTH (depth {max_depth}) after recovery")
                         else:
                             self.engine.set_depth(depth)
                     except Exception as e2:
@@ -248,20 +253,38 @@ class ChessEngine:
                         return False
                 return False
         
-    def get_best_move(self):
+    def get_best_move(self, time_limit=None):
+        """Get best move with optional time limit"""
         with self.engine_lock:
             if not self.engine or not self._check_engine_health():
                 return None
             try:
-                move = self.engine.get_best_move()
+                # Set time limit based on depth/level
+                if time_limit is None:
+                    if self.skill_level >= 20 and self.depth >= 20:
+                        time_limit = 10000  # 10 seconds for maximum strength
+                    elif self.skill_level >= 15 or self.depth >= 15:
+                        time_limit = 5000   # 5 seconds for high strength
+                    else:
+                        time_limit = 2000   # 2 seconds for normal play
+                
+                # Use time-limited move calculation
+                move = self.engine.get_best_move_time(time_limit)
                 if move is None:
-                    print("Engine returned None for best move")
+                    print(f"Engine returned None for best move (time limit: {time_limit}ms)")
+                    # Fallback to regular get_best_move with shorter depth
+                    if self.depth > 10:
+                        original_depth = self.depth
+                        self.engine.set_depth(10)  # Reduce depth for faster move
+                        move = self.engine.get_best_move()
+                        self.engine.set_depth(original_depth)  # Restore depth
                 return move
             except Exception as e:
                 print(f"Error getting best move: {e}")
                 if self._recover_engine() and self.engine:
                     try:
-                        return self.engine.get_best_move()
+                        # Use shorter time limit for recovery
+                        return self.engine.get_best_move_time(min(time_limit or 2000, 2000))
                     except Exception as e2:
                         print(f"Failed to get best move after recovery: {e2}")
                         return None

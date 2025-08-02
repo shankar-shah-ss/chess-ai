@@ -1,0 +1,20 @@
+[Event "Engine vs Engine"]
+[Site "Chess AI"]
+[Date "2025.08.02"]
+[Round "1"]
+[White "Engine"]
+[Black "Engine"]
+[Result "1-0"]
+[TimeControl "-"]
+[PlyCount "10"]
+[EventDate "2025.08.02"]
+[Generator "Chess AI v1.0"]
+[Termination "Checkmate"]
+
+1. e4 e5
+2. Nf3 Nc6
+3. Bc4 Bc5
+4. Ng5 f6
+5. Qh5# 
+
+1-0

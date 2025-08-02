@@ -23,6 +23,7 @@ class Main:
         self.initial_fen = None
         self.last_click_time = 0
         self.click_debounce = 100  # milliseconds - reduced for better responsiveness
+        self.pgn_save_offered = False  # Track if we've offered to save PGN
         
         # Enhanced resource management
         from resource_manager import resource_manager
@@ -54,6 +55,9 @@ class Main:
             
             # Process engine moves (highest priority)
             if hasattr(game, 'engine_thread') and game.engine_thread:
+                # Check for engine timeout
+                game.check_engine_timeout()
+                
                 if game.make_engine_move():
                     self._render_game_state(screen, game, dragger)
                     pygame.display.flip()  # Faster than update()
@@ -67,6 +71,13 @@ class Main:
 
             # Handle game over state
             if game.game_over:
+                # Offer to save PGN once when game ends
+                if not self.pgn_save_offered and game.pgn.get_move_count() > 0:
+                    self.pgn_save_offered = True
+                    # Use threading to avoid blocking the main loop
+                    import threading
+                    threading.Thread(target=self._offer_save_pgn, args=(game,), daemon=True).start()
+                
                 self._render_game_state(screen, game, dragger)
                 self._render_game_over_overlay(screen, game)
                 pygame.display.flip()
@@ -78,6 +89,9 @@ class Main:
                             self._reset_game(game)
                         elif event.key == pygame.K_F11:
                             self._toggle_fullscreen()
+                        elif event.key == pygame.K_s and pygame.key.get_pressed()[pygame.K_LCTRL]:
+                            # Allow manual save even after game over
+                            self._save_pgn(game)
                     elif event.type == pygame.QUIT:
                         self._cleanup_and_exit()
                 continue
@@ -257,6 +271,7 @@ class Main:
             ("I", "Toggle info panel"),
             ("H", "Show/hide this help"),
             ("F11", "Toggle fullscreen"),
+            ("Ctrl+S", "Save game as PGN"),
             ("", ""),
             ("Chess.com Style Controls:", ""),
             ("Left Click", "Select piece (if has moves) / Make move"),
@@ -315,6 +330,7 @@ class Main:
         """Reset the game"""
         try:
             game.reset()
+            self.pgn_save_offered = False  # Reset PGN save flag for new game
         except Exception as e:
             print(f"Error resetting: {e}")
     
@@ -467,6 +483,9 @@ class Main:
                 self.show_game_info = not self.show_game_info
             elif event.key == pygame.K_h:
                 self.show_help = not self.show_help
+            elif event.key == pygame.K_s and pygame.key.get_pressed()[pygame.K_LCTRL]:
+                # Ctrl+S to save PGN
+                self._save_pgn(game)
                 
         elif event.type == pygame.QUIT:
             pygame.quit()
@@ -568,6 +587,33 @@ class Main:
             'pieces': movable_pieces,
             'timestamp': pygame.time.get_ticks()
         }
+    
+    def _save_pgn(self, game):
+        """Save PGN with user dialog"""
+        try:
+            if game.pgn.get_move_count() == 0:
+                print("No moves to save")
+                return
+            
+            success = game.pgn.save_game()
+            if success:
+                print("✅ PGN saved successfully")
+            else:
+                print("❌ PGN save cancelled or failed")
+        except Exception as e:
+            print(f"Error saving PGN: {e}")
+    
+    def _offer_save_pgn(self, game):
+        """Offer to save PGN when game ends (runs in separate thread)"""
+        try:
+            # Small delay to ensure game state is fully updated
+            import time
+            time.sleep(0.5)
+            
+            if game.pgn.get_move_count() > 0:
+                game.pgn.save_game()
+        except Exception as e:
+            print(f"Error offering PGN save: {e}")
 
 if __name__ == '__main__':
     main = Main()

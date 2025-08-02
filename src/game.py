@@ -14,6 +14,7 @@ from piece import King, Pawn
 from error_handling import safe_execute, validate_game_state, ErrorRecovery, monitor_performance
 from thread_manager import thread_manager
 from resource_manager import resource_manager
+from pgn_manager import PGNIntegration
 
 class EngineWorker(Thread):
     def __init__(self, game, fen, move_queue, engine=None):
@@ -24,9 +25,12 @@ class EngineWorker(Thread):
         self.engine = engine or game.engine  # Use specific engine or fallback
         self.daemon = True
         self.priority = threading.THREAD_PRIORITY_ABOVE_NORMAL if hasattr(threading, 'THREAD_PRIORITY_ABOVE_NORMAL') else None
+        self.start_time = None
 
     def run(self):
         try:
+            self.start_time = time.time()
+            
             # Validate FEN before using
             if not self.fen or len(self.fen.strip()) == 0:
                 print("Invalid FEN provided to engine worker")
@@ -37,7 +41,17 @@ class EngineWorker(Thread):
                 print("Failed to set position in engine worker")
                 return
                 
-            uci_move = self.engine.get_best_move()
+            # Get best move with appropriate time limit
+            time_limit = None
+            if hasattr(self.game, 'level') and hasattr(self.game, 'depth'):
+                if self.game.level >= 20 and self.game.depth >= 20:
+                    time_limit = 10000  # 10 seconds max for highest settings
+                elif self.game.level >= 15 or self.game.depth >= 15:
+                    time_limit = 5000   # 5 seconds for high settings
+                else:
+                    time_limit = 3000   # 3 seconds for normal settings
+            
+            uci_move = self.engine.get_best_move(time_limit)
             
             if uci_move and len(uci_move) >= 4:
                 col_map = {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7}
@@ -236,6 +250,10 @@ class Game:
         # Performance tracking
         self.last_evaluation_time = 0
         self.evaluation_interval = 5.0  # Much longer interval for smoothness
+        
+        # PGN recording system
+        self.pgn = PGNIntegration(self)
+        self.pgn.start_recording()  # Auto-start recording
 
     # Game mode methods
     def set_game_mode(self, mode):
@@ -787,6 +805,63 @@ class Game:
                         print("Invalid FEN generated, cannot schedule engine move")
                 except Exception as e:
                     print(f"Error scheduling engine move: {e}")
+    
+    def check_engine_timeout(self):
+        """Check if engine thread has been running too long and terminate if needed"""
+        with self.thread_cleanup_lock:
+            if self.engine_thread and self.engine_thread.is_alive():
+                if hasattr(self.engine_thread, 'start_time') and self.engine_thread.start_time:
+                    elapsed = time.time() - self.engine_thread.start_time
+                    
+                    # Set timeout based on settings
+                    max_timeout = 15  # 15 seconds absolute maximum
+                    if hasattr(self, 'level') and hasattr(self, 'depth'):
+                        if self.level >= 20 and self.depth >= 20:
+                            max_timeout = 15  # 15 seconds for maximum strength
+                        elif self.level >= 15 or self.depth >= 15:
+                            max_timeout = 8   # 8 seconds for high strength
+                        else:
+                            max_timeout = 5   # 5 seconds for normal play
+                    
+                    if elapsed > max_timeout:
+                        print(f"⚠️ Engine timeout after {elapsed:.1f}s (max: {max_timeout}s) - forcing move")
+                        
+                        # Try to get a quick move with reduced depth
+                        try:
+                            current_engine = self._get_engine_for_player(self.next_player)
+                            if current_engine:
+                                # Temporarily reduce depth for quick move
+                                original_depth = current_engine.depth
+                                current_engine.set_depth(min(8, original_depth))
+                                
+                                fen = self.board.to_fen(self.next_player)
+                                if current_engine.set_position(fen):
+                                    quick_move = current_engine.get_best_move(2000)  # 2 second limit
+                                    if quick_move:
+                                        # Parse and queue the move
+                                        col_map = {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7}
+                                        try:
+                                            from_col = col_map[quick_move[0]]
+                                            from_row = 8 - int(quick_move[1])
+                                            to_col = col_map[quick_move[2]]
+                                            to_row = 8 - int(quick_move[3])
+                                            
+                                            if (0 <= from_row < 8 and 0 <= from_col < 8 and 
+                                                0 <= to_row < 8 and 0 <= to_col < 8):
+                                                initial = Square(from_row, from_col)
+                                                final = Square(to_row, to_col)
+                                                self.engine_move_queue.put(Move(initial, final))
+                                                print(f"✅ Quick move generated: {quick_move}")
+                                        except (KeyError, ValueError, IndexError):
+                                            pass
+                                
+                                # Restore original depth
+                                current_engine.set_depth(original_depth)
+                        except Exception as e:
+                            print(f"Error generating quick move: {e}")
+                        
+                        # Terminate the stuck thread
+                        self.engine_thread = None
             
     def check_game_state(self):
         """Check for game over conditions"""
@@ -806,30 +881,41 @@ class Game:
         if self.board.is_checkmate(self.next_player):
             self.game_over = True
             self.winner = 'black' if self.next_player == 'white' else 'white'
+            # Record PGN result
+            result = "1-0" if self.winner == 'white' else "0-1"
+            self.pgn.end_game(result, "Checkmate")
             return
             
         # Check for stalemate
         if self.board.is_stalemate(self.next_player):
             self.game_over = True
             self.winner = None
+            # Record PGN result
+            self.pgn.end_game("1/2-1/2", "Stalemate")
             return
             
         # Check for threefold repetition
         if self.board.is_threefold_repetition():
             self.game_over = True
             self.winner = None
+            # Record PGN result
+            self.pgn.end_game("1/2-1/2", "Threefold repetition")
             return
             
         # Check for fifty-move rule
         if self.board.is_fifty_move_rule():
             self.game_over = True
             self.winner = None
+            # Record PGN result
+            self.pgn.end_game("1/2-1/2", "Fifty-move rule")
             return
             
         # Check for insufficient material
         if self._is_insufficient_material():
             self.game_over = True
             self.winner = None
+            # Record PGN result
+            self.pgn.end_game("1/2-1/2", "Insufficient material")
             
     def _is_insufficient_material(self):
         """Check for insufficient material to checkmate"""
@@ -898,6 +984,8 @@ class Game:
             self.draw_offered = False
             self.draw_offer_by = None
             self.draw_accepted = True  # Flag for mutual agreement
+            # Record PGN result
+            self.pgn.end_game("1/2-1/2", "Draw by mutual agreement")
             return True
         return False
     
@@ -916,6 +1004,9 @@ class Game:
         if self.can_claim_draw():
             self.game_over = True
             self.winner = None
+            # Record PGN result
+            reason = "Threefold repetition" if self.board.is_threefold_repetition() else "Fifty-move rule"
+            self.pgn.end_game("1/2-1/2", f"Draw claimed by {reason}")
             return True
         return False
             
@@ -956,6 +1047,9 @@ class Game:
             'color': piece.color,
             'captured': captured
         })
+        
+        # Record move in PGN
+        self.pgn.record_move(move, piece, captured)
         
         # Clear any pending draw offer (draw offers expire after a move)
         self.draw_offered = False
