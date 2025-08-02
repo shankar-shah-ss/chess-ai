@@ -140,17 +140,25 @@ class EngineConfigWorker(Thread):
                 return
                 
             if self.config_type == 'depth':
-                if self.game.engine_white_instance:
-                    self.game.engine_white_instance.set_depth(self.value)
-                if self.game.engine_black_instance:
-                    self.game.engine_black_instance.set_depth(self.value)
-                print(f"✓ Both engines depth set to {self.value}")
+                # Check if depth is already set to avoid redundant calls
+                current_depth = getattr(self.game, 'current_engine_depth', None)
+                if current_depth != self.value:
+                    if self.game.engine_white_instance:
+                        self.game.engine_white_instance.set_depth(self.value)
+                    if self.game.engine_black_instance:
+                        self.game.engine_black_instance.set_depth(self.value)
+                    self.game.current_engine_depth = self.value
+                    print(f"✓ Both engines depth set to {self.value}")
             elif self.config_type == 'level':
-                if self.game.engine_white_instance:
-                    self.game.engine_white_instance.set_skill_level(self.value)
-                if self.game.engine_black_instance:
-                    self.game.engine_black_instance.set_skill_level(self.value)
-                print(f"✓ Both engines skill level set to {self.value}")
+                # Check if level is already set to avoid redundant calls
+                current_level = getattr(self.game, 'current_engine_level', None)
+                if current_level != self.value:
+                    if self.game.engine_white_instance:
+                        self.game.engine_white_instance.set_skill_level(self.value)
+                    if self.game.engine_black_instance:
+                        self.game.engine_black_instance.set_skill_level(self.value)
+                    self.game.current_engine_level = self.value
+                    print(f"✓ Both engines skill level set to {self.value}")
         except Exception as e:
             print(f"Engine config worker error: {e}")
 
@@ -225,6 +233,8 @@ class Game:
         self.depth = 15
         self.level = 10
         self.game_mode = 0
+        self.current_engine_depth = None  # Track current engine depth
+        self.current_engine_level = None  # Track current engine level
         self.evaluation = None
         self.evaluation_lock = Lock()
         
@@ -246,6 +256,7 @@ class Game:
         self.config_thread = None
         self.engine_move_queue = queue.Queue(maxsize=10)  # Prevent unbounded growth
         self.thread_cleanup_lock = Lock()
+        self.board_state_lock = Lock()  # Protect board state during FEN generation
         
         # Performance tracking
         self.last_evaluation_time = 0
@@ -750,13 +761,20 @@ class Game:
             current_time - self.last_evaluation_time > self.evaluation_interval):
             
             try:
-                fen = self.board.to_fen(self.next_player)
+                # Thread-safe FEN generation
+                with self.board_state_lock:
+                    fen = self.board.to_fen(self.next_player)
+                
+                if fen is None:
+                    print("FEN generation returned None, cannot schedule evaluation")
+                    return
+                
                 if fen and len(fen.strip()) > 0 and self._validate_fen(fen):
                     self.evaluation_thread = EvaluationWorker(self, fen, engine)
                     self.evaluation_thread.start()
                     self.last_evaluation_time = current_time
                 else:
-                    print("Invalid FEN generated, cannot schedule evaluation")
+                    print(f"Invalid FEN generated, cannot schedule evaluation: '{fen}'")
             except Exception as e:
                 print(f"Error scheduling evaluation: {e}")
 
@@ -797,12 +815,22 @@ class Game:
                     return
                     
                 try:
-                    fen = self.board.to_fen(self.next_player)
+                    # Thread-safe FEN generation
+                    with self.board_state_lock:
+                        fen = self.board.to_fen(self.next_player)
+                    
+                    if fen is None:
+                        print("FEN generation returned None, board state corrupted")
+                        self._debug_board_state()
+                        return
+                    
                     if fen and len(fen.strip()) > 0 and self._validate_fen(fen):
                         self.engine_thread = EngineWorker(self, fen, self.engine_move_queue, current_engine)
                         self.engine_thread.start()
                     else:
-                        print("Invalid FEN generated, cannot schedule engine move")
+                        print(f"Invalid FEN generated, cannot schedule engine move: '{fen}'")
+                        # Debug: Print board state when FEN is invalid
+                        self._debug_board_state()
                 except Exception as e:
                     print(f"Error scheduling engine move: {e}")
     
@@ -813,15 +841,17 @@ class Game:
                 if hasattr(self.engine_thread, 'start_time') and self.engine_thread.start_time:
                     elapsed = time.time() - self.engine_thread.start_time
                     
-                    # Set timeout based on settings
-                    max_timeout = 15  # 15 seconds absolute maximum
+                    # Set timeout based on settings - increased for maximum depth
+                    max_timeout = 30  # 30 seconds absolute maximum
                     if hasattr(self, 'level') and hasattr(self, 'depth'):
                         if self.level >= 20 and self.depth >= 20:
-                            max_timeout = 15  # 15 seconds for maximum strength
+                            max_timeout = 30  # 30 seconds for maximum strength
+                        elif self.level >= 18 or self.depth >= 18:
+                            max_timeout = 20  # 20 seconds for very high strength
                         elif self.level >= 15 or self.depth >= 15:
-                            max_timeout = 8   # 8 seconds for high strength
+                            max_timeout = 12  # 12 seconds for high strength
                         else:
-                            max_timeout = 5   # 5 seconds for normal play
+                            max_timeout = 8   # 8 seconds for normal play
                     
                     if elapsed > max_timeout:
                         print(f"⚠️ Engine timeout after {elapsed:.1f}s (max: {max_timeout}s) - forcing move")
@@ -1012,21 +1042,20 @@ class Game:
             
     def make_move(self, piece, move):
         """Make a move and record it for analysis"""
-        # Check for special conditions before move
-        captured = self.board.squares[move.final.row][move.final.col].has_piece()
-        is_en_passant = (isinstance(piece, Pawn) and 
-                        abs(move.initial.col - move.final.col) == 1 and 
-                        self.board.squares[move.final.row][move.final.col].isempty() and
-                        self.board.en_passant_target)
-        captured = captured or is_en_passant
-        
-        # Get evaluation before move (if available)
-        eval_before = self.evaluation.copy() if self.evaluation else None
-        
-
-        
-        # Make the actual move
-        self.board.move(piece, move)
+        with self.board_state_lock:
+            # Check for special conditions before move
+            captured = self.board.squares[move.final.row][move.final.col].has_piece()
+            is_en_passant = (isinstance(piece, Pawn) and 
+                            abs(move.initial.col - move.final.col) == 1 and 
+                            self.board.squares[move.final.row][move.final.col].isempty() and
+                            self.board.en_passant_target)
+            captured = captured or is_en_passant
+            
+            # Get evaluation before move (if available)
+            eval_before = self.evaluation.copy() if self.evaluation else None
+            
+            # Make the actual move
+            self.board.move(piece, move)
         
         # Check for check/checkmate after move
         opponent_color = 'black' if piece.color == 'white' else 'white'
@@ -1118,6 +1147,44 @@ class Game:
             return board.is_valid()
         except:
             return False
+    
+    def _debug_board_state(self):
+        """Debug board state when FEN generation fails"""
+        try:
+            print("🔍 Debug: Board state when FEN generation failed:")
+            print(f"  Next player: {self.next_player}")
+            print(f"  Game over: {self.game_over}")
+            print(f"  Castling rights: {self.board.castling_rights}")
+            print(f"  En passant target: {self.board.en_passant_target}")
+            print(f"  Halfmove clock: {self.board.halfmove_clock}")
+            print(f"  Fullmove number: {self.board.fullmove_number}")
+            
+            # Check for any None pieces on the board
+            none_pieces = []
+            for row in range(8):
+                for col in range(8):
+                    square = self.board.squares[row][col]
+                    if square.piece is None and not square.isempty():
+                        none_pieces.append(f"({row},{col})")
+            
+            if none_pieces:
+                print(f"  ⚠️ Found squares with None pieces: {none_pieces}")
+            
+            # Check for pieces without proper attributes
+            invalid_pieces = []
+            for row in range(8):
+                for col in range(8):
+                    square = self.board.squares[row][col]
+                    if square.has_piece():
+                        piece = square.piece
+                        if not hasattr(piece, 'name') or not hasattr(piece, 'color'):
+                            invalid_pieces.append(f"({row},{col})")
+            
+            if invalid_pieces:
+                print(f"  ⚠️ Found invalid pieces: {invalid_pieces}")
+                
+        except Exception as e:
+            print(f"  ❌ Error during board state debug: {e}")
     
     @safe_execute(fallback_value=None, context="game_cleanup")
     def cleanup(self):

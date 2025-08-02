@@ -97,6 +97,14 @@ class PGNManager:
             is_castling, promotion_piece, is_en_passant
         )
         
+        # Handle captured_piece - it might be a piece object, boolean, or None
+        captured_name = None
+        if captured_piece:
+            if hasattr(captured_piece, 'name'):
+                captured_name = captured_piece.name
+            elif isinstance(captured_piece, bool):
+                captured_name = "piece"  # Generic capture indicator
+        
         move_record = {
             'notation': notation,
             'move_number': self.move_number,
@@ -104,7 +112,7 @@ class PGNManager:
             'timestamp': datetime.datetime.now(),
             'move_obj': move,  # Keep reference for analysis
             'piece': piece.name,
-            'captured': captured_piece.name if captured_piece else None,
+            'captured': captured_name,
             'check': is_check,
             'checkmate': is_checkmate,
             'castling': is_castling,

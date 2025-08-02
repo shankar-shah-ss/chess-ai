@@ -259,12 +259,14 @@ class ChessEngine:
             if not self.engine or not self._check_engine_health():
                 return None
             try:
-                # Set time limit based on depth/level
+                # Set time limit based on depth/level - reduced for stability
                 if time_limit is None:
                     if self.skill_level >= 20 and self.depth >= 20:
-                        time_limit = 10000  # 10 seconds for maximum strength
+                        time_limit = 8000   # 8 seconds for maximum strength (reduced from 10)
+                    elif self.skill_level >= 18 or self.depth >= 18:
+                        time_limit = 6000   # 6 seconds for very high strength
                     elif self.skill_level >= 15 or self.depth >= 15:
-                        time_limit = 5000   # 5 seconds for high strength
+                        time_limit = 4000   # 4 seconds for high strength
                     else:
                         time_limit = 2000   # 2 seconds for normal play
                 
@@ -272,12 +274,32 @@ class ChessEngine:
                 move = self.engine.get_best_move_time(time_limit)
                 if move is None:
                     print(f"Engine returned None for best move (time limit: {time_limit}ms)")
-                    # Fallback to regular get_best_move with shorter depth
-                    if self.depth > 10:
-                        original_depth = self.depth
-                        self.engine.set_depth(10)  # Reduce depth for faster move
-                        move = self.engine.get_best_move()
-                        self.engine.set_depth(original_depth)  # Restore depth
+                    # Aggressive fallback with multiple attempts
+                    fallback_attempts = [
+                        (8, 3000),   # Depth 8, 3 seconds
+                        (6, 2000),   # Depth 6, 2 seconds  
+                        (4, 1000),   # Depth 4, 1 second
+                        (2, 500),    # Depth 2, 0.5 seconds
+                    ]
+                    
+                    original_depth = self.depth
+                    for fallback_depth, fallback_time in fallback_attempts:
+                        try:
+                            print(f"Trying fallback: depth {fallback_depth}, time {fallback_time}ms")
+                            self.engine.set_depth(fallback_depth)
+                            move = self.engine.get_best_move_time(fallback_time)
+                            if move is not None:
+                                print(f"Fallback successful at depth {fallback_depth}")
+                                break
+                        except Exception as e:
+                            print(f"Fallback failed at depth {fallback_depth}: {e}")
+                            continue
+                    
+                    # Restore original depth
+                    try:
+                        self.engine.set_depth(original_depth)
+                    except:
+                        pass
                 return move
             except Exception as e:
                 print(f"Error getting best move: {e}")

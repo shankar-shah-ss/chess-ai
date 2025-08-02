@@ -1,0 +1,29 @@
+[Event "Human vs Human"]
+[Site "Chess AI"]
+[Date "2025.08.02"]
+[Round "1"]
+[White "Human"]
+[Black "Human"]
+[Result "*"]
+[TimeControl "-"]
+[PlyCount "125"]
+[EventDate "2025.08.02"]
+[Time "21:48:55"]
+[UTCTime "21:48:55"]
+[UTCDate "2025.08.02"]
+[Mode "OTB"]
+[Generator "Chess AI v2.0"]
+
+1. d4 d5 2. g3 c5 3. c3 e6 4. Ngf3 cxd4 5. cxd4 Ngf6 6. e3 Nbc6 7. Nbc3 Bfe7 8.
+Bfg2 Nfe4 9. O-O f5 10. Bcd2 O-O 11. Nfe1 b6 12. Rac1 Nca5 13. f3 Nef6 14. Nce2
+Bcd7 15. Bdxa5 bxa5 16. Q1d2 Qdb6 17. Rf1f2 Bed6 18. Bgf1 Rab8 19. N2c3 a4 20.
+a3 Rbc8 21. Bfe2 Rc8c7 22. R2f1 e5 23. Kgh1 Kgh8 24. dxe5 B6xe5 25. Neg2 Rfb8
+26. Rc1c2 Bexc3 27. bxc3 Qbc5 28. Ngf4 Rbe8 29. Rfc1 Qcxa3 30. Khg1 Qae7 31. c4
+dxc4 32. Bexc4 a3 33. R2c3 Reb8 34. Q2d3 a5 35. Rc3xa3 Rbd8 36. R3xa5 Qeb4 37.
+R5a2 Rdc8 38. Rac2 Bda4 39. R2c3 Bad7 40. Rc1b1 Qbc5 41. Rbc1 Qcb4 42. Nfe2 g5
+43. Kgf2 Khg7 44. Rc1b1 Qbf8 45. R1b6 R7c6 46. Rbxc6 R8xc6 47. Rcb3 R6c7 48.
+Q3d4 R7c6 49. R3b7 K7g6 50. Rbxd7 R6xc4 51. Qdxc4 Nfxd7 52. Ned4 Nde5 53. Qce6+
+Q8f6 54. Qed5 Nef7 55. h3 Nfd6 56. g4 fxg4 57. hxg4 h5 58. Qdg8+ Kgh6 59. Kfg3
+hxg4 60. K3xg4 Qfe5 61. Qgf8+ Khg6 62. Ndc6 Q5e6+ 63. K4g3
+
+*
