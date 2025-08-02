@@ -16,6 +16,7 @@ from thread_manager import thread_manager
 from resource_manager import resource_manager
 from pgn_manager import PGNIntegration
 from draw_manager import DrawManager, DrawType, DrawCondition
+from move_validator import MoveValidator, EngineMovePreventer
 
 class EngineWorker(Thread):
     def __init__(self, game, fen, move_queue, engine=None):
@@ -54,30 +55,65 @@ class EngineWorker(Thread):
             
             uci_move = self.engine.get_best_move(time_limit)
             
-            if uci_move and len(uci_move) >= 4:
-                col_map = {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7}
-                try:
-                    from_col = col_map[uci_move[0]]
-                    from_row = 8 - int(uci_move[1])
-                    to_col = col_map[uci_move[2]]
-                    to_row = 8 - int(uci_move[3])
-                    
-                    # Validate coordinates
-                    if (0 <= from_row < 8 and 0 <= from_col < 8 and 
-                        0 <= to_row < 8 and 0 <= to_col < 8):
-                        initial = Square(from_row, from_col)
-                        final = Square(to_row, to_col)
-                        self.move_queue.put(Move(initial, final))
+            if uci_move:
+                # Use professional move validator
+                validator = MoveValidator()
+                
+                # Determine current player from FEN
+                current_player = 'white' if 'w' in self.fen.split()[1] else 'black'
+                
+                # Validate the move thoroughly
+                validated_move = validator.validate_uci_move(uci_move, self.game.board, current_player)
+                
+                if validated_move:
+                    # Double-check that this is the correct player's turn
+                    if current_player == self.game.next_player:
+                        self.move_queue.put(validated_move)
+                        print(f"✅ Engine move validated and queued: {uci_move}")
                     else:
-                        print(f"Invalid move coordinates: {uci_move}")
-                except (KeyError, ValueError, IndexError) as e:
-                    print(f"Error parsing UCI move {uci_move}: {e}")
+                        print(f"❌ Turn mismatch: engine={current_player}, game={self.game.next_player}")
+                else:
+                    print(f"❌ Move validation failed: {uci_move}")
+                    # Try to get a fallback move
+                    self._try_fallback_move(current_player)
             else:
-                print(f"Invalid UCI move received: {uci_move}")
+                print(f"❌ Engine returned no move")
+                # Try to get a fallback move
+                current_player = 'white' if 'w' in self.fen.split()[1] else 'black'
+                self._try_fallback_move(current_player)
         except Exception as e:
             print(f"Engine worker error: {e}")
             import traceback
             traceback.print_exc()
+    
+    def _try_fallback_move(self, current_player: str):
+        """Try to generate a fallback move when primary move fails"""
+        try:
+            print(f"🔄 Attempting fallback move for {current_player}")
+            
+            # Try with reduced depth and time
+            original_depth = self.engine.depth
+            self.engine.set_depth(min(8, original_depth))
+            
+            fallback_move = self.engine.get_best_move(1000)  # 1 second timeout
+            
+            if fallback_move:
+                validator = MoveValidator()
+                validated_move = validator.validate_uci_move(fallback_move, self.game.board, current_player)
+                
+                if validated_move and current_player == self.game.next_player:
+                    self.move_queue.put(validated_move)
+                    print(f"✅ Fallback move successful: {fallback_move}")
+                else:
+                    print(f"❌ Fallback move validation failed: {fallback_move}")
+            else:
+                print(f"❌ No fallback move available")
+            
+            # Restore original depth
+            self.engine.set_depth(original_depth)
+            
+        except Exception as e:
+            print(f"❌ Fallback move error: {e}")
 
 class EvaluationWorker(Thread):
     def __init__(self, game, fen, engine=None):
@@ -247,6 +283,10 @@ class Game:
         
         # Professional-grade draw management system
         self.draw_manager = DrawManager()
+        
+        # Professional move validation and engine control
+        self.move_validator = MoveValidator()
+        self.engine_move_preventer = EngineMovePreventer()
         
         # Legacy draw tracking (kept for compatibility)
         self.draw_offered = False  # Track if a draw has been offered
@@ -785,36 +825,77 @@ class Game:
                 print(f"Error scheduling evaluation: {e}")
 
     def make_engine_move(self):
-        """Process engine move from queue"""
+        """Process engine move from queue with comprehensive validation"""
         try:
             # Non-blocking get from queue
             move = self.engine_move_queue.get_nowait()
             if not move or not hasattr(move, 'initial') or not hasattr(move, 'final'):
                 return False
+            
+            # Check if engine is allowed to move (prevent double moves)
+            if not self.engine_move_preventer.can_engine_move(self.next_player, self.next_player):
+                print(f"❌ Engine move prevented - turn control violation")
+                return False
+            
+            # Validate the move one more time before execution
+            if not self.move_validator.validate_engine_position(self.board, self.next_player):
+                print(f"❌ Engine move prevented - invalid board position")
+                return False
                 
             piece = self.board.squares[move.initial.row][move.initial.col].piece
             
-            if piece and piece.color == self.next_player:
-                captured = self.board.squares[move.final.row][move.final.col].has_piece()
-                
-                # Make the move
-                self.make_move(piece, move)
-                
-                with self.thread_cleanup_lock:
-                    self.engine_thread = None
-                return True
+            if not piece:
+                print(f"❌ No piece at source square: ({move.initial.row}, {move.initial.col})")
+                return False
+            
+            # Verify piece belongs to current player
+            if piece.color != self.next_player:
+                print(f"❌ Wrong piece color: {piece.color} vs {self.next_player}")
+                return False
+            
+            # Final move validation
+            self.board.calc_moves(piece, move.initial.row, move.initial.col, bool=True)
+            valid_move = False
+            for valid in piece.moves:
+                if (valid.final.row == move.final.row and 
+                    valid.final.col == move.final.col):
+                    valid_move = True
+                    break
+            
+            if not valid_move:
+                print(f"❌ Move not in piece's valid moves: {piece.name} from ({move.initial.row}, {move.initial.col}) to ({move.final.row}, {move.final.col})")
+                return False
+            
+            # Check for special conditions before move
+            captured = self.board.squares[move.final.row][move.final.col].has_piece()
+            
+            # Make the move
+            print(f"✅ Executing validated engine move: {piece.name} from ({move.initial.row}, {move.initial.col}) to ({move.final.row}, {move.final.col})")
+            self.make_move(piece, move)
+            
+            with self.thread_cleanup_lock:
+                self.engine_thread = None
+            return True
+            
         except queue.Empty:
             return False
         except Exception as e:
-            print(f"Error making engine move: {e}")
+            print(f"❌ Error making engine move: {e}")
+            import traceback
+            traceback.print_exc()
             with self.thread_cleanup_lock:
                 self.engine_thread = None
             return False
 
     def schedule_engine_move(self):
-        """Schedule engine to calculate next move"""
+        """Schedule engine to calculate next move with validation"""
         with self.thread_cleanup_lock:
             if not self.engine_thread and not self.game_over:
+                # Check if engine should be allowed to move
+                if not self.engine_move_preventer.can_engine_move(self.next_player, self.next_player):
+                    print(f"❌ Engine move scheduling prevented - turn control")
+                    return
+                
                 # Get the correct engine for current player
                 current_engine = self._get_engine_for_player(self.next_player)
                 if not current_engine:
