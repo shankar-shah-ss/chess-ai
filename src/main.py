@@ -109,6 +109,7 @@ class Main:
         game.show_all_moves_hint(screen)  # Show all moves hint
         game.show_move_preview(screen)  # Show move preview before selected moves
         game.show_moves(screen)
+        game.show_no_moves_feedback(screen)  # Show feedback for pieces with no moves
         game.show_check(screen)
         game.show_pieces(screen)
         game.show_hover(screen)
@@ -261,8 +262,8 @@ class Main:
             ("H", "Show/hide this help"),
             ("F11", "Toggle fullscreen"),
             ("", ""),
-            ("Click-to-Move:", ""),
-            ("Left Click", "Select piece / Make move"),
+            ("Chess.com Style Controls:", ""),
+            ("Left Click", "Select piece (if has moves) / Make move"),
             ("Right Click", "Preview piece moves"),
             ("ESC", "Deselect piece"),
             ("SPACE", "Show all movable pieces"),
@@ -415,12 +416,10 @@ class Main:
                         self._deselect_piece(dragger)
         
         elif event.type == pygame.MOUSEMOTION:
-            if dragger.dragging:
-                dragger.update_mouse(event.pos)
-            else:
-                motion_row = event.pos[1] // SQSIZE
-                motion_col = event.pos[0] // SQSIZE
-                game.set_hover(motion_row, motion_col)
+            # Handle hover effects for pieces (no dragging in chess.com style)
+            motion_row = event.pos[1] // SQSIZE
+            motion_col = event.pos[0] // SQSIZE
+            game.set_hover(motion_row, motion_col)
                     
         elif event.type == pygame.MOUSEBUTTONUP:
             # No action needed for click-to-move style
@@ -482,23 +481,26 @@ class Main:
         return False
     
     def _select_piece(self, game, board, dragger, square, row, col):
-        """Select a piece and calculate its possible moves"""
+        """Select a piece and calculate its possible moves (chess.com style)"""
         # Calculate possible moves for the piece
         board.calc_moves(square.piece, row, col, bool=True)
         
-        # Set dragger state
-        dragger.initial_row = row
-        dragger.initial_col = col
-        dragger.piece = square.piece
-        dragger.dragging = True
-        
-        # Play selection sound if available
-        if hasattr(game, 'sound_manager') and game.sound_manager:
-            game.sound_manager.play_select()
+        # Only select the piece if it has valid moves (chess.com behavior)
+        if square.piece.moves:
+            # Select the piece using the new method
+            dragger.select_piece(square.piece, row, col)
+            
+            # Play selection sound if available
+            if hasattr(game, 'sound_manager') and game.sound_manager:
+                game.sound_manager.play_select()
+        else:
+            # Piece has no valid moves - don't select it
+            # Optionally provide visual feedback
+            self._show_no_moves_feedback(row, col)
     
     def _deselect_piece(self, dragger):
         """Deselect the currently selected piece"""
-        dragger.undrag_piece()
+        dragger.deselect_piece()
     
     def _attempt_move(self, game, board, dragger, target_row, target_col):
         """Attempt to move the selected piece to the target square"""
@@ -511,7 +513,7 @@ class Main:
             # Make the move
             game.make_move(dragger.piece, move)
             # Deselect the piece
-            dragger.undrag_piece()
+            dragger.deselect_piece()
         else:
             # Invalid move - provide visual feedback
             self._show_invalid_move_feedback(target_row, target_col)
@@ -522,6 +524,19 @@ class Main:
         # This could be enhanced with a red flash or shake animation
         # For now, we'll just keep the piece selected
         pass
+    
+    def _show_no_moves_feedback(self, row, col):
+        """Show visual feedback when a piece has no valid moves"""
+        # Store feedback state for visual rendering
+        if not hasattr(self.game, 'no_moves_feedback'):
+            self.game.no_moves_feedback = {}
+        
+        self.game.no_moves_feedback = {
+            'row': row,
+            'col': col,
+            'timestamp': pygame.time.get_ticks(),
+            'duration': 500  # Show feedback for 500ms
+        }
     
     def _show_move_preview(self, game, board, square, row, col):
         """Show move preview for right-clicked piece (temporary highlight)"""

@@ -369,14 +369,21 @@ class Game:
     
     def show_moves(self, surface):
         """Show possible moves for the selected piece with chess.com-style highlighting"""
-        if self.dragger.dragging:
+        if self.dragger.selected and self.dragger.piece:
             piece = self.dragger.piece
             
-            # Highlight selected piece square with a bright yellow/green border
+            # Chess.com-style selected piece highlighting
             selected_rect = (self.dragger.initial_col * SQSIZE, self.dragger.initial_row * SQSIZE, SQSIZE, SQSIZE)
-            pygame.draw.rect(surface, (255, 255, 100), selected_rect, 5)  # Bright yellow border
             
-            # Show possible moves with chess.com-style dots and highlights
+            # Create a subtle background highlight for the selected square
+            selected_surface = pygame.Surface((SQSIZE, SQSIZE), pygame.SRCALPHA)
+            selected_surface.fill((255, 255, 0, 80))  # Yellow highlight
+            surface.blit(selected_surface, selected_rect)
+            
+            # Draw a thick border around the selected piece (chess.com style)
+            pygame.draw.rect(surface, (255, 255, 0), selected_rect, 4)  # Thick yellow border
+            
+            # Show possible moves with authentic chess.com-style indicators
             for move in piece.moves:
                 move_col = move.final.col
                 move_row = move.final.row
@@ -389,24 +396,46 @@ class Game:
                 has_opponent_piece = target_square.has_piece() and target_square.piece.color != piece.color
                 
                 if has_opponent_piece:
-                    # For capture moves: draw a ring around the piece
-                    pygame.draw.circle(surface, (255, 100, 100, 180), (center_x, center_y), SQSIZE // 2 - 5, 4)
-                    # Add subtle red overlay
+                    # For capture moves: draw a thick ring around the target square (chess.com style)
+                    pygame.draw.circle(surface, (255, 70, 70), (center_x, center_y), SQSIZE // 2 - 3, 5)
+                    # Add subtle capture highlight
                     capture_surface = pygame.Surface((SQSIZE, SQSIZE), pygame.SRCALPHA)
-                    capture_surface.fill((255, 100, 100, 40))
+                    capture_surface.fill((255, 70, 70, 30))
                     surface.blit(capture_surface, move_rect)
                 else:
-                    # For regular moves: draw a semi-transparent dot in the center
-                    dot_radius = SQSIZE // 6
-                    dot_surface = pygame.Surface((dot_radius * 2, dot_radius * 2), pygame.SRCALPHA)
-                    pygame.draw.circle(dot_surface, (100, 100, 100, 150), (dot_radius, dot_radius), dot_radius)
-                    dot_rect = dot_surface.get_rect(center=(center_x, center_y))
-                    surface.blit(dot_surface, dot_rect)
+                    # For regular moves: draw a solid dot in the center (chess.com style)
+                    dot_radius = SQSIZE // 8
+                    pygame.draw.circle(surface, (130, 130, 130), (center_x, center_y), dot_radius)
+                    
+                    # Add subtle move highlight
+                    move_surface = pygame.Surface((SQSIZE, SQSIZE), pygame.SRCALPHA)
+                    move_surface.fill((130, 130, 130, 25))
+                    surface.blit(move_surface, move_rect)
+    
+    def show_no_moves_feedback(self, surface):
+        """Show visual feedback for pieces with no valid moves"""
+        if hasattr(self, 'no_moves_feedback') and self.no_moves_feedback:
+            current_time = pygame.time.get_ticks()
+            feedback = self.no_moves_feedback
+            
+            # Check if feedback should still be shown
+            if current_time - feedback['timestamp'] < feedback['duration']:
+                row, col = feedback['row'], feedback['col']
+                feedback_rect = (col * SQSIZE, row * SQSIZE, SQSIZE, SQSIZE)
                 
-                # Add subtle hover effect for all possible moves
-                hover_surface = pygame.Surface((SQSIZE, SQSIZE), pygame.SRCALPHA)
-                hover_surface.fill((255, 255, 255, 20))
-                surface.blit(hover_surface, move_rect)
+                # Create a pulsing red effect
+                elapsed = current_time - feedback['timestamp']
+                alpha = int(100 * (1 - elapsed / feedback['duration']))  # Fade out
+                
+                feedback_surface = pygame.Surface((SQSIZE, SQSIZE), pygame.SRCALPHA)
+                feedback_surface.fill((255, 100, 100, alpha))
+                surface.blit(feedback_surface, feedback_rect)
+                
+                # Red border
+                pygame.draw.rect(surface, (255, 50, 50), feedback_rect, 3)
+            else:
+                # Clear expired feedback
+                self.no_moves_feedback = None
     
     def show_move_preview(self, surface):
         """Show temporary move preview for right-clicked pieces"""

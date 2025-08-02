@@ -5,55 +5,73 @@ import pygame
 from const import *
 
 class Dragger:
+    """
+    Chess.com-style piece selector - handles piece selection and move highlighting
+    instead of drag-and-drop functionality
+    """
 
     def __init__(self):
         self.piece = None
-        self.dragging = False
+        self.selected = False  # Changed from 'dragging' to 'selected'
         self.mouseX = 0
         self.mouseY = 0
         self.initial_row = 0
         self.initial_col = 0
 
-    # blit method
-
-    def update_blit(self, surface):
-        # texture
-        self.piece.set_texture(size=128)
-        texture = self.piece.texture
-        try:
-            # img
-            img = pygame.image.load(texture)
-            # rect
-            img_center = (self.mouseX, self.mouseY)
-            self.piece.texture_rect = img.get_rect(center=img_center)
-            # blit
-            surface.blit(img, self.piece.texture_rect)
-        except pygame.error:
-            # Fallback to simple colored circle if image loading fails
-            color = (255, 255, 255) if self.piece.color == 'white' else (0, 0, 0)
-            pygame.draw.circle(surface, color, (self.mouseX, self.mouseY), SQSIZE // 3)
-            pygame.draw.circle(surface, (128, 128, 128), (self.mouseX, self.mouseY), SQSIZE // 3, 2)
-
-    # other methods
+    # Legacy compatibility - keeping dragging property for existing code
+    @property
+    def dragging(self):
+        return self.selected
+    
+    @dragging.setter
+    def dragging(self, value):
+        self.selected = value
 
     def update_mouse(self, pos):
-        self.mouseX, self.mouseY = pos # (xcor, ycor)
+        """Update mouse position (kept for compatibility)"""
+        self.mouseX, self.mouseY = pos
 
     def save_initial(self, pos):
+        """Save initial click position"""
         self.initial_row = pos[1] // SQSIZE
         self.initial_col = pos[0] // SQSIZE
 
-    def drag_piece(self, piece):
+    def select_piece(self, piece, row, col):
+        """Select a piece at the given position (chess.com style)"""
         self.piece = piece
-        self.dragging = True
+        self.selected = True
+        self.initial_row = row
+        self.initial_col = col
+
+    def deselect_piece(self):
+        """Deselect the currently selected piece"""
+        self.piece = None
+        self.selected = False
+        self.initial_row = 0
+        self.initial_col = 0
+
+    # Legacy methods for compatibility
+    def drag_piece(self, piece):
+        """Legacy method - now just selects the piece"""
+        if hasattr(piece, 'moves') and piece.moves:
+            self.piece = piece
+            self.selected = True
 
     def undrag_piece(self):
-        self.piece = None
-        self.dragging = False
+        """Legacy method - now deselects the piece"""
+        self.deselect_piece()
         
     def get_selected_square(self):
         """Get the currently selected square coordinates"""
-        if self.dragging:
+        if self.selected:
             return (self.initial_row, self.initial_col)
         return None
+
+    def is_piece_selected(self):
+        """Check if a piece is currently selected"""
+        return self.selected and self.piece is not None
+
+    def get_selected_piece(self):
+        """Get the currently selected piece"""
+        return self.piece if self.selected else None
 # [file content end]
