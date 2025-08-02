@@ -1,0 +1,20 @@
+[Event "Human vs Human"]
+[Site "Chess AI"]
+[Date "2025.08.03"]
+[Round "1"]
+[White "Human"]
+[Black "Human"]
+[Result "1-0"]
+[TimeControl "-"]
+[PlyCount "7"]
+[EventDate "2025.08.03"]
+[Time "00:55:53"]
+[UTCTime "00:55:53"]
+[UTCDate "2025.08.03"]
+[Mode "OTB"]
+[Generator "Chess AI v2.0"]
+[Termination "Checkmate"]
+
+1. e4 e5 2. Qdh5 Nbc6 3. Bfc4 d6 4. Qhxf7#
+
+1-0

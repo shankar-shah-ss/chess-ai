@@ -2,12 +2,15 @@
 import pygame
 import sys
 import os
+import chess
 
 from const import *
 from game import Game
 from square import Square
 from move import Move
 from chess_analysis_system import ChessAnalysisSystem, AnalysisMode
+from opening_explorer import opening_explorer
+from control_panel import chess_control_panel
 
 
 class Main:
@@ -22,6 +25,8 @@ class Main:
         self.show_game_info = True
         self.show_help = False
         self.show_analysis = False  # Toggle analysis panel
+        self.show_opening_explorer = False  # Toggle opening explorer
+        self.show_control_panel = True  # Toggle comprehensive control panel
         self.initial_fen = None
         self.last_click_time = 0
         self.click_debounce = 100  # milliseconds - reduced for better responsiveness
@@ -65,6 +70,13 @@ class Main:
                 game.check_engine_timeout()
                 
                 if game.make_engine_move():
+                    # Update opening theory system after engine move
+                    try:
+                        current_fen = game.board.to_fen(game.next_player)
+                        self.analysis_system.update_current_position(current_fen)
+                    except Exception as e:
+                        print(f"⚠️ Opening theory update failed after engine move: {e}")
+                    
                     self._render_game_state(screen, game, dragger)
                     pygame.display.flip()  # Faster than update()
                     continue
@@ -106,13 +118,26 @@ class Main:
             if not dragger.dragging and (not hasattr(game, 'engine_thread') or not game.engine_thread):
                 if (game.next_player == 'white' and game.engine_white) or \
                    (game.next_player == 'black' and game.engine_black):
-                    game.schedule_engine_move()
+                    # Check if we can schedule an engine move (prevents consecutive moves)
+                    if game.engine_move_preventer.can_engine_move(game.next_player, game.next_player):
+                        game.schedule_engine_move()
 
             # Render normal game state
             self._render_game_state(screen, game, dragger)
 
             # Handle game events
             for event in pygame.event.get():
+                # Handle mouse wheel for control panel scrolling
+                if event.type == pygame.MOUSEWHEEL and self.show_control_panel:
+                    control_panel_x = WIDTH - 420
+                    control_panel_y = 20
+                    mouse_x, mouse_y = pygame.mouse.get_pos()
+                    
+                    if (control_panel_x <= mouse_x <= control_panel_x + chess_control_panel.width and
+                        control_panel_y <= mouse_y <= control_panel_y + chess_control_panel.height):
+                        chess_control_panel.handle_scroll(event.y)
+                        continue
+                
                 if self._handle_game_event(event, game, board, dragger):
                     continue
             
@@ -130,8 +155,14 @@ class Main:
         game.show_pieces(screen)
         game.show_hover(screen)
         
-        # Show modern game info panel
-        if self.show_game_info:
+        # Show comprehensive control panel (replaces old game info panel)
+        if self.show_control_panel:
+            control_panel_x = WIDTH - 420
+            control_panel_y = 20
+            chess_control_panel.render(screen, control_panel_x, control_panel_y, 
+                                     game, self.analysis_system, self)
+        elif self.show_game_info:
+            # Fallback to simple game info panel
             self._render_modern_game_info(screen, game)
         
         # Show help overlay if requested
@@ -141,6 +172,13 @@ class Main:
         # Show analysis panel if enabled
         if self.show_analysis:
             self.analysis_system.render_analysis_panel(screen)
+        
+        # Show opening explorer if enabled
+        if self.show_opening_explorer:
+            # Position opening explorer on the left side
+            explorer_x = 20
+            explorer_y = 20
+            opening_explorer.render(screen, explorer_x, explorer_y)
 
     def _render_modern_game_info(self, screen, game):
         """Render modern game information panel"""
@@ -290,6 +328,13 @@ class Main:
             ("Ctrl+X", "Decline draw offer"),
             ("Ctrl+C", "Claim available draw"),
             ("", ""),
+            ("UI Panels & Analysis:", ""),
+            ("C", "Toggle comprehensive control panel"),
+            ("A", "Toggle analysis panel"),
+            ("O", "Toggle opening explorer"),
+            ("I", "Toggle simple game info panel"),
+            ("F5", "Analysis system shortcuts"),
+            ("", ""),
             ("Chess.com Style Controls:", ""),
             ("Left Click", "Select piece (if has moves) / Make move"),
             ("Right Click", "Preview piece moves"),
@@ -398,6 +443,28 @@ class Main:
         if self.show_analysis and self.analysis_system.handle_click(event.pos if event.type == pygame.MOUSEBUTTONDOWN else (0, 0)):
             return True
         
+        # Handle control panel events
+        if self.show_control_panel and event.type == pygame.MOUSEBUTTONDOWN:
+            control_panel_x = WIDTH - 420
+            control_panel_y = 20
+            relative_x = event.pos[0] - control_panel_x
+            relative_y = event.pos[1] - control_panel_y
+            
+            if 0 <= relative_x <= chess_control_panel.width and 0 <= relative_y <= chess_control_panel.height:
+                if chess_control_panel.handle_click(relative_x, relative_y, game, self.analysis_system, self):
+                    return True
+        
+        # Handle opening explorer events
+        if self.show_opening_explorer and event.type == pygame.MOUSEBUTTONDOWN:
+            explorer_x = 20
+            explorer_y = 20
+            relative_x = event.pos[0] - explorer_x
+            relative_y = event.pos[1] - explorer_y
+            
+            if 0 <= relative_x <= opening_explorer.width and 0 <= relative_y <= opening_explorer.height:
+                if opening_explorer.handle_click(relative_x, relative_y):
+                    return True
+        
         if event.type == pygame.KEYDOWN:
             # Analysis system keyboard shortcuts
             if self.analysis_system.handle_key(event.key):
@@ -503,6 +570,25 @@ class Main:
             elif event.key == pygame.K_b:
                 game.toggle_engine('black')
             
+            # Toggle UI panels
+            elif event.key == pygame.K_c:
+                self.show_control_panel = not self.show_control_panel
+                print(f"🎛️ Control panel {'enabled' if self.show_control_panel else 'disabled'}")
+            elif event.key == pygame.K_a:
+                self.show_analysis = not self.show_analysis
+            elif event.key == pygame.K_o:
+                self.show_opening_explorer = not self.show_opening_explorer
+                # Update opening explorer with current position
+                if self.show_opening_explorer:
+                    try:
+                        current_fen = game.board.to_fen(game.next_player)
+                        opening_explorer.state.current_fen = current_fen
+                        opening_explorer.board = chess.Board(current_fen)
+                    except Exception as e:
+                        print(f"⚠️ Error updating opening explorer: {e}")
+            elif event.key == pygame.K_i:
+                self.show_game_info = not self.show_game_info
+            
             # Click-to-move enhancements
             elif event.key == pygame.K_ESCAPE:
                 # Deselect piece with Escape key
@@ -580,6 +666,14 @@ class Main:
         if board.valid_move(dragger.piece, move):
             # Make the move
             game.make_move(dragger.piece, move)
+            
+            # Update opening theory system with new position
+            try:
+                current_fen = game.board.to_fen(game.next_player)
+                self.analysis_system.update_current_position(current_fen)
+            except Exception as e:
+                print(f"⚠️ Opening theory update failed: {e}")
+            
             # Deselect the piece
             dragger.deselect_piece()
         else:

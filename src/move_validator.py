@@ -242,8 +242,9 @@ class EngineMovePreventer:
     def __init__(self):
         self.last_engine_move_time = 0
         self.last_engine_player = None
-        self.move_cooldown = 0.5  # Minimum time between engine moves
+        self.move_cooldown = 0.1  # Minimum time between engine moves (reduced)
         self.turn_tracker = None
+        self.engine_in_progress = None  # Track which player has engine thinking
         
     def can_engine_move(self, current_player: str, game_turn: str) -> bool:
         """Check if engine is allowed to move now"""
@@ -255,6 +256,11 @@ class EngineMovePreventer:
             print(f"❌ Turn mismatch: engine thinks {current_player}, game says {game_turn}")
             return False
         
+        # Check if engine is already thinking for this player
+        if self.engine_in_progress == current_player:
+            print(f"❌ Engine already thinking for {current_player}")
+            return False
+        
         # Apply cooldown to prevent rapid-fire moves by the same player
         if (self.last_engine_player == current_player and 
             self.last_engine_move_time > 0):
@@ -263,23 +269,38 @@ class EngineMovePreventer:
                 print(f"❌ Engine cooldown active for {current_player}: {time_since_last:.2f}s < {self.move_cooldown}s")
                 return False
         
-        # Prevent same player from moving twice in a row (only if turn hasn't changed)
+        # Prevent same player from moving twice in a row
+        # If the last engine player is the same as current AND the turn tracker shows it's not their turn
         if (self.last_engine_player == current_player and 
-            self.turn_tracker == current_player):
-            print(f"❌ Same player attempting consecutive moves: {current_player}")
+            self.turn_tracker is not None and 
+            self.turn_tracker != current_player):
+            print(f"❌ Same player attempting consecutive moves: {current_player} (turn should be {self.turn_tracker})")
             return False
         
         return True
     
-    def record_engine_move(self, current_player: str, game_turn: str):
+    def start_engine_thinking(self, current_player: str):
+        """Mark that engine started thinking for a player"""
+        self.engine_in_progress = current_player
+    
+    def record_engine_move(self, current_player: str, next_turn: str):
         """Record that an engine move was made"""
         import time
         self.last_engine_move_time = time.time()
         self.last_engine_player = current_player
-        self.turn_tracker = game_turn
+        # Track the next player's turn (after the move is made)
+        self.turn_tracker = next_turn
+        # Clear the thinking flag
+        self.engine_in_progress = None
+    
+    def clear_engine_thinking(self):
+        """Clear the engine thinking flag (for timeouts/errors)"""
+        if self.engine_in_progress:
+            self.engine_in_progress = None
     
     def reset(self):
         """Reset for new game"""
         self.last_engine_move_time = 0
         self.last_engine_player = None
         self.turn_tracker = None
+        self.engine_in_progress = None

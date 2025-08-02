@@ -22,6 +22,8 @@ from board import Board
 from move import Move
 from square import Square
 from analysis_file_manager import analysis_file_manager
+from opening_theory_system import opening_theory_system
+from opening_theory_ui import CompactOpeningDisplay
 
 class AnalysisMode(Enum):
     """Analysis mode types"""
@@ -90,10 +92,11 @@ class ChessAnalysisSystem:
         self.best_move_hint = None
         self.principal_variation = []
         
-        # Phase 3: Move Classification
+        # Phase 3: Move Classification & Opening Theory
         self.move_classifications = {}
         self.opening_database = {}
         self.accuracy_scores = {'white': 0.0, 'black': 0.0}
+        self.opening_display = CompactOpeningDisplay()
         
         # Phase 4: Interactive Exploration
         self.exploration_mode = False
@@ -106,6 +109,7 @@ class ChessAnalysisSystem:
         self.evaluation_bar_rect = pygame.Rect(800, 50, 20, 300)
         self.move_list_rect = pygame.Rect(830, 400, 380, 350)
         self.controls_rect = pygame.Rect(830, 50, 380, 100)
+        self.opening_panel_rect = pygame.Rect(830, 160, 380, 120)
         
         # Initialize components
         self._initialize_analysis_engine()
@@ -130,19 +134,12 @@ class ChessAnalysisSystem:
             self.analysis_engine = None
     
     def _load_opening_database(self):
-        """Load opening database for classification"""
-        # Simplified opening database - in production, use comprehensive database
-        self.opening_database = {
-            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3": {
-                "name": "King's Pawn Opening",
-                "eco": "B00"
-            },
-            "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6": {
-                "name": "King's Pawn Game",
-                "eco": "C20"
-            },
-            # Add more openings as needed
-        }
+        """Load comprehensive opening database"""
+        # The opening theory system is already initialized globally
+        # We just need to reference it
+        print("✅ Opening Theory System integrated")
+        print(f"   📚 {len(opening_theory_system.variations)} opening variations loaded")
+        print(f"   🎲 {len(opening_theory_system.positions)} theoretical positions indexed")
     
     # ==================== PHASE 1: BASIC GAME REVIEW ====================
     
@@ -320,12 +317,25 @@ class ChessAnalysisSystem:
             
             analysis_time = time.time() - start_time
             
+            # Detect opening from the game
+            opening_info = {"name": "Unknown", "eco": ""}
+            if move_analyses:
+                # Use the position after a few moves to detect opening
+                try:
+                    temp_board = chess.Board()
+                    moves_to_check = min(10, len(move_analyses))  # Check first 10 moves
+                    for i in range(moves_to_check):
+                        temp_board.push_san(move_analyses[i].move)
+                    opening_info = self.detect_opening(temp_board.fen())
+                except:
+                    pass
+            
             # Create game analysis
             game_analysis = GameAnalysis(
                 pgn=pgn_content,
                 moves=move_analyses,
-                opening_name="Unknown",  # Detect from database
-                opening_eco="",
+                opening_name=opening_info.get("name", "Unknown"),
+                opening_eco=opening_info.get("eco", ""),
                 white_accuracy=85.0,  # Calculate from move classifications
                 black_accuracy=82.0,
                 game_result=game.headers.get('Result', '*'),
@@ -367,13 +377,9 @@ class ChessAnalysisSystem:
         }
         return annotations.get(classification, "")
     
-    def detect_opening(self, fen: str) -> Dict[str, str]:
-        """Detect opening from position (Phase 3)"""
-        opening_info = self.opening_database.get(fen, {
-            'name': 'Unknown Opening',
-            'eco': ''
-        })
-        return opening_info
+    def detect_opening(self, fen: str) -> Dict[str, Any]:
+        """Detect opening from position using comprehensive opening theory system"""
+        return opening_theory_system.detect_opening(fen)
     
     def calculate_accuracy(self, move_analyses: List[MoveAnalysis], color: str) -> float:
         """Calculate accuracy score for player (Phase 3)"""
@@ -396,6 +402,12 @@ class ChessAnalysisSystem:
         # Convert to accuracy percentage (simplified formula)
         accuracy = max(0, 100 - (average_loss / 10))
         return min(100, accuracy)
+    
+    def update_current_position(self, fen: str):
+        """Update current position for real-time opening detection"""
+        self.current_board_fen = fen
+        if hasattr(self, 'opening_display'):
+            self.opening_display.update_position(fen)
     
     # ==================== PHASE 4: INTERACTIVE EXPLORATION ====================
     
@@ -637,8 +649,17 @@ class ChessAnalysisSystem:
         screen.blit(white_surface, (x_start, self.analysis_panel_rect.y + y_offset))
         screen.blit(black_surface, (x_start, self.analysis_panel_rect.y + y_offset + 25))
         
-        # Opening information
-        if self.current_analysis:
+        # Opening information using new opening theory system
+        if hasattr(self, 'current_board_fen') and self.current_board_fen:
+            self.opening_display.update_position(self.current_board_fen)
+            opening_height = self.opening_display.render_compact(
+                screen, 
+                x_start, 
+                self.analysis_panel_rect.y + y_offset + 60, 
+                self.analysis_panel_rect.width - 20
+            )
+        elif self.current_analysis:
+            # Fallback to basic display
             opening_text = f"Opening: {self.current_analysis.opening_name}"
             opening_surface = font.render(opening_text, True, (0, 100, 0))
             screen.blit(opening_surface, (x_start, self.analysis_panel_rect.y + y_offset + 60))

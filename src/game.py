@@ -832,10 +832,7 @@ class Game:
             if not move or not hasattr(move, 'initial') or not hasattr(move, 'final'):
                 return False
             
-            # Check if engine is allowed to move (prevent double moves)
-            if not self.engine_move_preventer.can_engine_move(self.next_player, self.next_player):
-                print(f"❌ Engine move prevented - turn control violation")
-                return False
+            # Engine move validation is now handled in main loop before scheduling
             
             # Validate the move one more time before execution
             if not self.move_validator.validate_engine_position(self.board, self.next_player):
@@ -874,9 +871,12 @@ class Game:
             
             # Record the engine move before making it
             current_player = self.next_player
-            self.engine_move_preventer.record_engine_move(current_player, current_player)
             
             self.make_move(piece, move)
+            
+            # Record the engine move after making it (with correct next turn)
+            next_player = self.next_player  # This is now the next player after the move
+            self.engine_move_preventer.record_engine_move(current_player, next_player)
             
             with self.thread_cleanup_lock:
                 self.engine_thread = None
@@ -889,6 +889,7 @@ class Game:
             import traceback
             traceback.print_exc()
             with self.thread_cleanup_lock:
+                self.engine_move_preventer.clear_engine_thinking()
                 self.engine_thread = None
             return False
 
@@ -896,11 +897,6 @@ class Game:
         """Schedule engine to calculate next move with validation"""
         with self.thread_cleanup_lock:
             if not self.engine_thread and not self.game_over:
-                # Check if engine should be allowed to move
-                if not self.engine_move_preventer.can_engine_move(self.next_player, self.next_player):
-                    print(f"❌ Engine move scheduling prevented - turn control")
-                    return
-                
                 # Get the correct engine for current player
                 current_engine = self._get_engine_for_player(self.next_player)
                 if not current_engine:
@@ -917,6 +913,8 @@ class Game:
                         return
                     
                     if fen and len(fen.strip()) > 0 and self._validate_fen(fen):
+                        # Mark that engine is starting to think
+                        self.engine_move_preventer.start_engine_thinking(self.next_player)
                         self.engine_thread = EngineWorker(self, fen, self.engine_move_queue, current_engine)
                         self.engine_thread.start()
                     else:
@@ -983,6 +981,7 @@ class Game:
                             print(f"Error generating quick move: {e}")
                         
                         # Terminate the stuck thread
+                        self.engine_move_preventer.clear_engine_thinking()
                         self.engine_thread = None
             
     def check_game_state(self):
