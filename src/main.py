@@ -274,6 +274,12 @@ class Main:
             ("Ctrl+S", "Quick save PGN (no dialogs)"),
             ("Shift+S", "Save PGN with dialog"),
             ("", ""),
+            ("Professional Draw System:", ""),
+            ("Ctrl+D", "Offer draw"),
+            ("Ctrl+A", "Accept draw offer"),
+            ("Ctrl+X", "Decline draw offer"),
+            ("Ctrl+C", "Claim available draw"),
+            ("", ""),
             ("Chess.com Style Controls:", ""),
             ("Left Click", "Select piece (if has moves) / Make move"),
             ("Right Click", "Preview piece moves"),
@@ -485,6 +491,20 @@ class Main:
                 # Shift+S for save with dialog
                 self._save_pgn(game)
             
+            # Draw management shortcuts
+            elif event.key == pygame.K_d and pygame.key.get_pressed()[pygame.K_LCTRL]:
+                # Ctrl+D to offer draw
+                self._offer_draw(game)
+            elif event.key == pygame.K_a and pygame.key.get_pressed()[pygame.K_LCTRL]:
+                # Ctrl+A to accept draw
+                self._accept_draw(game)
+            elif event.key == pygame.K_x and pygame.key.get_pressed()[pygame.K_LCTRL]:
+                # Ctrl+X to decline draw
+                self._decline_draw(game)
+            elif event.key == pygame.K_c and pygame.key.get_pressed()[pygame.K_LCTRL]:
+                # Ctrl+C to claim draw
+                self._claim_draw(game)
+            
             # Other features
             elif event.key == pygame.K_F11:
                 self._toggle_fullscreen()
@@ -623,6 +643,79 @@ class Main:
                 print("❌ Quick save failed")
         except Exception as e:
             print(f"Error quick saving PGN: {e}")
+    
+    def _offer_draw(self, game):
+        """Offer a draw"""
+        try:
+            if game.game_over:
+                print("Cannot offer draw - game is over")
+                return
+            
+            current_player = game.next_player
+            success = game.offer_draw(current_player)
+            if success:
+                print(f"🤝 Draw offered by {current_player}")
+            else:
+                print("❌ Cannot offer draw at this time")
+        except Exception as e:
+            print(f"Error offering draw: {e}")
+    
+    def _accept_draw(self, game):
+        """Accept a draw offer"""
+        try:
+            if not game.draw_offered:
+                print("No draw offer to accept")
+                return
+            
+            current_player = game.next_player
+            success = game.accept_draw(current_player)
+            if success:
+                print(f"🤝 Draw accepted by {current_player}")
+            else:
+                print("❌ Cannot accept draw")
+        except Exception as e:
+            print(f"Error accepting draw: {e}")
+    
+    def _decline_draw(self, game):
+        """Decline a draw offer"""
+        try:
+            if not game.draw_offered:
+                print("No draw offer to decline")
+                return
+            
+            current_player = game.next_player
+            success = game.decline_draw(current_player)
+            if success:
+                print(f"❌ Draw declined by {current_player}")
+            else:
+                print("Cannot decline draw")
+        except Exception as e:
+            print(f"Error declining draw: {e}")
+    
+    def _claim_draw(self, game):
+        """Claim a draw (show available claims)"""
+        try:
+            claimable_draws = game.get_claimable_draws()
+            if not claimable_draws:
+                print("No draws available to claim")
+                return
+            
+            print("📋 Available draw claims:")
+            for i, draw in enumerate(claimable_draws):
+                print(f"  {i+1}. {game.draw_manager.get_draw_description(draw)}")
+            
+            # For now, claim the first available draw
+            # In a full UI, this would show a selection dialog
+            if claimable_draws:
+                from draw_manager import DrawType
+                draw_type = claimable_draws[0].draw_type
+                success = game.claim_draw(draw_type)
+                if success:
+                    print(f"⚖️ Draw claimed successfully")
+                else:
+                    print("❌ Failed to claim draw")
+        except Exception as e:
+            print(f"Error claiming draw: {e}")
     
     def _offer_save_pgn(self, game):
         """Offer to save PGN when game ends (runs in separate thread)"""

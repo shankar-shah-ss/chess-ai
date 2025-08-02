@@ -15,6 +15,7 @@ from error_handling import safe_execute, validate_game_state, ErrorRecovery, mon
 from thread_manager import thread_manager
 from resource_manager import resource_manager
 from pgn_manager import PGNIntegration
+from draw_manager import DrawManager, DrawType, DrawCondition
 
 class EngineWorker(Thread):
     def __init__(self, game, fen, move_queue, engine=None):
@@ -243,6 +244,11 @@ class Game:
         self.winner = None
         self.check_alert = None
         self.move_history = []  # Track move history for analysis
+        
+        # Professional-grade draw management system
+        self.draw_manager = DrawManager()
+        
+        # Legacy draw tracking (kept for compatibility)
         self.draw_offered = False  # Track if a draw has been offered
         self.draw_offer_by = None  # Track who offered the draw
         self.draw_accepted = False  # Track if draw was accepted by mutual agreement
@@ -907,7 +913,7 @@ class Game:
             except:
                 pass
             
-        # Check for checkmate
+        # Check for checkmate first (takes priority over draws)
         if self.board.is_checkmate(self.next_player):
             self.game_over = True
             self.winner = 'black' if self.next_player == 'white' else 'white'
@@ -915,12 +921,39 @@ class Game:
             result = "1-0" if self.winner == 'white' else "0-1"
             self.pgn.end_game(result, "Checkmate")
             return
+        
+        # Use professional-grade draw manager
+        try:
+            # Check if draw manager detected an automatic draw
+            draw_status = self.draw_manager.get_draw_status()
             
+            if draw_status['game_over'] and draw_status['draw_result']:
+                self.game_over = True
+                self.winner = None
+                draw_condition = draw_status['draw_result']
+                
+                # Record PGN result with detailed reason
+                reason = self.draw_manager.get_draw_description(draw_condition)
+                self.pgn.end_game("1/2-1/2", reason)
+                
+                # Store draw result for UI display
+                self.draw_result = draw_condition
+                return
+            
+            # Update claimable draws for UI display
+            self.claimable_draws = draw_status['claimable_draws']
+            
+        except Exception as e:
+            print(f"Error in professional draw system, falling back to legacy: {e}")
+            # Fallback to legacy draw detection
+            self._check_legacy_draws()
+    
+    def _check_legacy_draws(self):
+        """Legacy draw detection system (fallback)"""
         # Check for stalemate
         if self.board.is_stalemate(self.next_player):
             self.game_over = True
             self.winner = None
-            # Record PGN result
             self.pgn.end_game("1/2-1/2", "Stalemate")
             return
             
@@ -928,7 +961,6 @@ class Game:
         if self.board.is_threefold_repetition():
             self.game_over = True
             self.winner = None
-            # Record PGN result
             self.pgn.end_game("1/2-1/2", "Threefold repetition")
             return
             
@@ -936,7 +968,6 @@ class Game:
         if self.board.is_fifty_move_rule():
             self.game_over = True
             self.winner = None
-            # Record PGN result
             self.pgn.end_game("1/2-1/2", "Fifty-move rule")
             return
             
@@ -944,7 +975,6 @@ class Game:
         if self._is_insufficient_material():
             self.game_over = True
             self.winner = None
-            # Record PGN result
             self.pgn.end_game("1/2-1/2", "Insufficient material")
             
     def _is_insufficient_material(self):
@@ -998,47 +1028,108 @@ class Game:
                 
         return False
     
+    # Professional-grade draw management methods
+    
     def offer_draw(self, player):
         """Offer a draw by the specified player"""
         if not self.game_over:
-            self.draw_offered = True
-            self.draw_offer_by = player
-            return True
+            # Use professional draw manager
+            success = self.draw_manager.offer_draw(player)
+            if success:
+                # Update legacy flags for compatibility
+                self.draw_offered = True
+                self.draw_offer_by = player
+                print(f"🤝 Draw offered by {player}")
+                return True
         return False
     
-    def accept_draw(self):
+    def accept_draw(self, player=None):
         """Accept the draw offer"""
-        if self.draw_offered:
-            self.game_over = True
-            self.winner = None  # Draw
-            self.draw_offered = False
-            self.draw_offer_by = None
-            self.draw_accepted = True  # Flag for mutual agreement
-            # Record PGN result
-            self.pgn.end_game("1/2-1/2", "Draw by mutual agreement")
-            return True
-        return False
-    
-    def decline_draw(self):
-        """Decline the draw offer"""
-        self.draw_offered = False
-        self.draw_offer_by = None
-        return True
-    
-    def can_claim_draw(self):
-        """Check if current player can claim a draw (threefold repetition or fifty-move rule)"""
-        return self.board.is_threefold_repetition() or self.board.is_fifty_move_rule()
-    
-    def claim_draw(self):
-        """Claim a draw based on rules (threefold repetition or fifty-move rule)"""
-        if self.can_claim_draw():
+        if player is None:
+            player = self.next_player
+        
+        # Use professional draw manager
+        draw_result = self.draw_manager.accept_draw(player)
+        if draw_result:
             self.game_over = True
             self.winner = None
+            self.draw_result = draw_result
+            
+            # Update legacy flags
+            self.draw_offered = False
+            self.draw_offer_by = None
+            self.draw_accepted = True
+            
             # Record PGN result
-            reason = "Threefold repetition" if self.board.is_threefold_repetition() else "Fifty-move rule"
-            self.pgn.end_game("1/2-1/2", f"Draw claimed by {reason}")
+            reason = self.draw_manager.get_draw_description(draw_result)
+            self.pgn.end_game("1/2-1/2", reason)
+            print(f"🤝 Draw accepted: {reason}")
             return True
         return False
+    
+    def decline_draw(self, player=None):
+        """Decline the draw offer"""
+        if player is None:
+            player = self.next_player
+        
+        # Use professional draw manager
+        success = self.draw_manager.decline_draw(player)
+        if success:
+            # Update legacy flags
+            self.draw_offered = False
+            self.draw_offer_by = None
+            print(f"❌ Draw declined by {player}")
+            return True
+        return False
+    
+    def claim_draw(self, draw_type: DrawType):
+        """Claim a specific type of draw"""
+        draw_result = self.draw_manager.claim_draw(draw_type)
+        if draw_result:
+            self.game_over = True
+            self.winner = None
+            self.draw_result = draw_result
+            
+            # Record PGN result
+            reason = self.draw_manager.get_draw_description(draw_result)
+            self.pgn.end_game("1/2-1/2", reason)
+            print(f"⚖️ Draw claimed: {reason}")
+            return True
+        return False
+    
+    def can_claim_draw(self):
+        """Check if current player can claim any draw"""
+        try:
+            draw_status = self.draw_manager.get_draw_status()
+            return len(draw_status['claimable_draws']) > 0
+        except:
+            # Fallback to legacy system
+            return self.board.is_threefold_repetition() or self.board.is_fifty_move_rule()
+    
+    def get_claimable_draws(self):
+        """Get list of draws that can be claimed"""
+        try:
+            draw_status = self.draw_manager.get_draw_status()
+            return draw_status['claimable_draws']
+        except:
+            return []
+    
+    def get_draw_status_info(self):
+        """Get comprehensive draw status information for UI"""
+        try:
+            return self.draw_manager.get_draw_status()
+        except:
+            return {
+                'game_over': self.game_over,
+                'draw_result': None,
+                'draw_offered': self.draw_offered,
+                'draw_offer_by': self.draw_offer_by,
+                'claimable_draws': [],
+                'halfmove_clock': getattr(self.board, 'halfmove_clock', 0),
+                'position_repetitions': 0,
+                'move_number': 1
+            }
+
             
     def make_move(self, piece, move):
         """Make a move and record it for analysis"""
@@ -1080,6 +1171,9 @@ class Game:
         # Record move in PGN
         self.pgn.record_move(move, piece, captured)
         
+        # Update draw manager with move information
+        self._update_draw_manager(piece, move, captured, is_check)
+        
         # Clear any pending draw offer (draw offers expire after a move)
         self.draw_offered = False
         self.draw_offer_by = None
@@ -1087,6 +1181,43 @@ class Game:
         self.play_sound(captured)
         self.next_turn()
         self.check_game_state()
+    
+    def _update_draw_manager(self, piece, move, captured, is_check):
+        """Update draw manager with move information"""
+        try:
+            # Get castling rights (simplified - would need proper tracking)
+            castling_rights = {
+                'white_kingside': True,  # Would need proper tracking
+                'white_queenside': True,
+                'black_kingside': True,
+                'black_queenside': True
+            }
+            
+            # Get en passant square (simplified)
+            en_passant_square = None
+            if hasattr(self.board, 'en_passant_target') and self.board.en_passant_target:
+                en_passant_square = self.board.en_passant_target
+            
+            # Determine if it was a pawn move
+            was_pawn_move = isinstance(piece, Pawn)
+            
+            # Update draw manager
+            self.draw_manager.update_position(
+                board=self.board,
+                current_player=self.next_player,
+                castling_rights=castling_rights,
+                en_passant_square=en_passant_square,
+                was_capture=captured,
+                was_pawn_move=was_pawn_move,
+                is_check=is_check
+            )
+            
+            # Update claimable draws
+            self.draw_manager.update_claimable_draws(self.board, self.next_player)
+            
+        except Exception as e:
+            print(f"Error updating draw manager: {e}")
+            # Fall back to legacy system if draw manager fails
 
     def _get_move_notation(self, move, piece):
         """Generate simple algebraic notation for move"""
