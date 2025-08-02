@@ -4,7 +4,7 @@ Implements all official FIDE draw conditions with comprehensive detection and ma
 """
 
 import hashlib
-from typing import Dict, List, Tuple, Optional, Set
+from typing import Dict, List, Tuple, Optional, Set, Union
 from dataclasses import dataclass
 from enum import Enum
 import time
@@ -81,7 +81,7 @@ class DrawManager:
         self._position_cache.clear()
         
     def generate_position_hash(self, board, current_player: str, castling_rights: Dict, 
-                             en_passant_square: Optional[Tuple[int, int]] = None) -> str:
+                             en_passant_square: Optional[Union[Tuple[int, int], object]] = None) -> str:
         """
         Generate a unique hash for the current position including all relevant factors
         for draw detection (position, player to move, castling rights, en passant)
@@ -115,7 +115,13 @@ class DrawManager:
         
         # En passant square
         if en_passant_square:
-            position_data.append(f"ep:{en_passant_square[0]}{en_passant_square[1]}")
+            # Handle both tuple (row, col) and Square object
+            if hasattr(en_passant_square, 'row') and hasattr(en_passant_square, 'col'):
+                # It's a Square object
+                position_data.append(f"ep:{en_passant_square.row}{en_passant_square.col}")
+            else:
+                # It's a tuple (row, col)
+                position_data.append(f"ep:{en_passant_square[0]}{en_passant_square[1]}")
         else:
             position_data.append("ep:none")
         
@@ -124,7 +130,7 @@ class DrawManager:
         return hashlib.md5(position_string.encode()).hexdigest()
     
     def update_position(self, board, current_player: str, castling_rights: Dict,
-                       en_passant_square: Optional[Tuple[int, int]] = None,
+                       en_passant_square: Optional[Union[Tuple[int, int], object]] = None,
                        was_capture: bool = False, was_pawn_move: bool = False,
                        is_check: bool = False):
         """Update position tracking after a move"""

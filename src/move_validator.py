@@ -255,24 +255,28 @@ class EngineMovePreventer:
             print(f"❌ Turn mismatch: engine thinks {current_player}, game says {game_turn}")
             return False
         
-        # Prevent same engine from moving twice in a row
-        if self.last_engine_player == current_player:
+        # Apply cooldown to prevent rapid-fire moves by the same player
+        if (self.last_engine_player == current_player and 
+            self.last_engine_move_time > 0):
             time_since_last = current_time - self.last_engine_move_time
             if time_since_last < self.move_cooldown:
-                print(f"❌ Engine cooldown active: {time_since_last:.2f}s < {self.move_cooldown}s")
+                print(f"❌ Engine cooldown active for {current_player}: {time_since_last:.2f}s < {self.move_cooldown}s")
                 return False
-            else:
-                # Even after cooldown, same player shouldn't move twice unless turn changed
-                if self.turn_tracker == current_player:
-                    print(f"❌ Same player attempting consecutive moves: {current_player}")
-                    return False
         
-        # Update tracking
-        self.last_engine_move_time = current_time
-        self.last_engine_player = current_player
-        self.turn_tracker = game_turn
+        # Prevent same player from moving twice in a row (only if turn hasn't changed)
+        if (self.last_engine_player == current_player and 
+            self.turn_tracker == current_player):
+            print(f"❌ Same player attempting consecutive moves: {current_player}")
+            return False
         
         return True
+    
+    def record_engine_move(self, current_player: str, game_turn: str):
+        """Record that an engine move was made"""
+        import time
+        self.last_engine_move_time = time.time()
+        self.last_engine_player = current_player
+        self.turn_tracker = game_turn
     
     def reset(self):
         """Reset for new game"""

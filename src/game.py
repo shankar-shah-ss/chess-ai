@@ -35,12 +35,12 @@ class EngineWorker(Thread):
             
             # Validate FEN before using
             if not self.fen or len(self.fen.strip()) == 0:
-                print("Invalid FEN provided to engine worker")
+                print("❌ Invalid FEN provided to engine worker")
                 return
                 
             # Get best move from engine
             if not self.engine.set_position(self.fen):
-                print("Failed to set position in engine worker")
+                print("❌ Failed to set position in engine worker")
                 return
                 
             # Get best move with appropriate time limit
@@ -871,6 +871,11 @@ class Game:
             
             # Make the move
             print(f"✅ Executing validated engine move: {piece.name} from ({move.initial.row}, {move.initial.col}) to ({move.final.row}, {move.final.col})")
+            
+            # Record the engine move before making it
+            current_player = self.next_player
+            self.engine_move_preventer.record_engine_move(current_player, current_player)
+            
             self.make_move(piece, move)
             
             with self.thread_cleanup_lock:
@@ -1297,7 +1302,11 @@ class Game:
             self.draw_manager.update_claimable_draws(self.board, self.next_player)
             
         except Exception as e:
+            import traceback
             print(f"Error updating draw manager: {e}")
+            print(f"Error type: {type(e)}")
+            print(f"Traceback:")
+            traceback.print_exc()
             # Fall back to legacy system if draw manager fails
 
     def _get_move_notation(self, move, piece):

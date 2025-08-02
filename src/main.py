@@ -7,6 +7,7 @@ from const import *
 from game import Game
 from square import Square
 from move import Move
+from chess_analysis_system import ChessAnalysisSystem, AnalysisMode
 
 
 class Main:
@@ -20,10 +21,15 @@ class Main:
         # UI state
         self.show_game_info = True
         self.show_help = False
+        self.show_analysis = False  # Toggle analysis panel
         self.initial_fen = None
         self.last_click_time = 0
         self.click_debounce = 100  # milliseconds - reduced for better responsiveness
         self.pgn_save_offered = False  # Track if we've offered to save PGN
+        
+        # Initialize Chess Analysis System
+        self.analysis_system = ChessAnalysisSystem(self.game)
+        print("🎯 Chess Analysis System integrated into main game")
         
         # Enhanced resource management
         from resource_manager import resource_manager
@@ -131,6 +137,10 @@ class Main:
         # Show help overlay if requested
         if self.show_help:
             self._render_help_overlay(screen)
+        
+        # Show analysis panel if enabled
+        if self.show_analysis:
+            self.analysis_system.render_analysis_panel(screen)
 
     def _render_modern_game_info(self, screen, game):
         """Render modern game information panel"""
@@ -370,6 +380,10 @@ class Main:
             from engine import EnginePool
             EnginePool().cleanup_all()
             
+            # Cleanup analysis system
+            if hasattr(self, 'analysis_system'):
+                self.analysis_system.cleanup()
+            
             print("Cleanup completed successfully")
             
         except Exception as e:
@@ -380,6 +394,21 @@ class Main:
     
     def _handle_game_event(self, event, game, board, dragger):
         """Handle game events with enhanced click-to-move functionality"""
+        # Handle analysis system events first
+        if self.show_analysis and self.analysis_system.handle_click(event.pos if event.type == pygame.MOUSEBUTTONDOWN else (0, 0)):
+            return True
+        
+        if event.type == pygame.KEYDOWN:
+            # Analysis system keyboard shortcuts
+            if self.analysis_system.handle_key(event.key):
+                return True
+            
+            # Toggle analysis panel
+            if event.key == pygame.K_F5:
+                self.show_analysis = not self.show_analysis
+                print(f"🎯 Analysis panel {'enabled' if self.show_analysis else 'disabled'}")
+                return True
+        
         if event.type == pygame.MOUSEBUTTONDOWN:
             # Debounce clicks to prevent double-clicking issues
             current_time = pygame.time.get_ticks()
