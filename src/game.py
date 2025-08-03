@@ -1196,7 +1196,7 @@ class Game:
             # Get en passant square (simplified)
             en_passant_square = None
             if hasattr(self.board, 'en_passant_target') and self.board.en_passant_target:
-                en_passant_square = self.board.en_passant_target
+                en_passant_square = (self.board.en_passant_target.row, self.board.en_passant_target.col)
             
             # Determine if it was a pawn move
             was_pawn_move = isinstance(piece, Pawn)
