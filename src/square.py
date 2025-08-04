@@ -14,7 +14,7 @@ class Square:
         return self.row == other.row and self.col == other.col
 
     def has_piece(self):
-        return self.piece != None
+        return self.piece is not None
 
     def isempty(self):
         return not self.has_piece()

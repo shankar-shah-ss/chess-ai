@@ -5,7 +5,7 @@ import sys
 import os
 from functools import wraps
 from typing import Optional, Any, Callable, Dict, List
-from datetime import datetime
+from datetime import datetime, timezone
 import threading
 
 # Enhanced logging configuration
@@ -111,7 +111,7 @@ class ErrorTracker:
             
             # Add to history
             error_record = {
-                'timestamp': datetime.now(),
+                'timestamp': datetime.now(timezone.utc),
                 'type': error_type,
                 'message': error_msg,
                 'context': context,
@@ -302,7 +302,7 @@ class PerformanceMonitor:
                 self.metrics[name] = []
             
             self.metrics[name].append({
-                'timestamp': datetime.now(),
+                'timestamp': datetime.now(timezone.utc),
                 'value': value
             })
             
@@ -367,12 +367,12 @@ def monitor_performance():
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args, **kwargs):
-            start_time = datetime.now()
+            start_time = datetime.now(timezone.utc)
             try:
                 result = func(*args, **kwargs)
                 return result
             finally:
-                duration = (datetime.now() - start_time).total_seconds()
+                duration = (datetime.now(timezone.utc) - start_time).total_seconds()
                 performance_monitor.record_metric(f"{func.__name__}_duration", duration)
         return wrapper
     return decorator

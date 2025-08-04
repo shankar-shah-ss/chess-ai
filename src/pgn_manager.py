@@ -15,6 +15,8 @@ import datetime
 import re
 from typing import List, Dict, Optional, Tuple, Set
 import threading
+import chess
+import chess.pgn
 
 class PGNManager:
     """Manages PGN recording and export functionality"""
@@ -823,6 +825,46 @@ class PGNManager:
             'game_duration': self.get_game_duration()
         }
         return stats
+    
+    def save_analysis(self, filepath: str, analysis_board) -> bool:
+        """Save analysis as a PGN file with variations and comments"""
+        try:
+            # Create a new game from the analysis
+            game = chess.pgn.Game()
+            
+            # Set headers
+            for key, value in analysis_board.headers.items():
+                game.headers[key] = value
+            
+            # Set starting position if not standard
+            if analysis_board.initial_fen != chess.STARTING_FEN:
+                game.headers["FEN"] = analysis_board.initial_fen
+                game.headers["SetUp"] = "1"
+            
+            # Add moves and variations
+            node = game
+            for i, move_data in enumerate(analysis_board.move_history):
+                move = chess.Move.from_uci(move_data['move'].uci())
+                node = node.add_variation(move)
+                
+                # Add comments
+                if i in analysis_board.comments:
+                    node.comment = analysis_board.comments[i]
+                
+                # Add variations
+                if i in analysis_board.variations:
+                    for variation in analysis_board.variations[i]:
+                        var_move = chess.Move.from_uci(variation.uci())
+                        node.add_variation(var_move)
+            
+            # Save to file
+            with open(filepath, 'w') as f:
+                f.write(str(game))
+            
+            return True
+        except Exception as e:
+            print(f"Error saving analysis: {e}")
+            return False
 
 
 class PGNIntegration:
@@ -960,3 +1002,7 @@ class PGNIntegration:
     def export_to_fen(self) -> str:
         """Export current position to FEN"""
         return self.pgn_manager.export_to_fen()
+    
+    def save_analysis(self, filepath: str) -> bool:
+        """Save analysis as PGN"""
+        return self.pgn_manager.save_analysis(filepath, self.game.analysis_board)

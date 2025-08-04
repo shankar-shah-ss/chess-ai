@@ -1,6 +1,6 @@
 # main.py
 import pygame
-import sys
+from sys import exit
 import os
 
 from const import *
@@ -9,7 +9,7 @@ from square import Square
 from move import Move
 
 
-class Main:
+class ChessApplication:
     def __init__(self):
         pygame.init()
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -36,81 +36,86 @@ class Main:
         self.maintenance_interval = 30000  # 30 seconds
 
     def mainloop(self):
-        screen = self.screen
-        game = self.game
-        board = self.game.board
-        dragger = self.game.dragger
-
-        # Set initial game mode
-        game.set_game_mode(0)  # Start with human vs human
-
+        self.game.set_game_mode(0)  # Start with human vs human
+        
         while True:
-            self.clock.tick(120)  # Higher FPS for smoother experience
+            self.clock.tick(120)
+            self._perform_maintenance()
             
-            # Periodic maintenance
-            current_time = pygame.time.get_ticks()
-            if current_time - self.last_maintenance > self.maintenance_interval:
-                self.game.periodic_maintenance()
-                self.last_maintenance = current_time
-            
-            # Process engine moves (highest priority)
-            if hasattr(game, 'engine_thread') and game.engine_thread:
-                # Check for engine timeout
-                game.check_engine_timeout()
-                
-                if game.make_engine_move():
-                    self._render_game_state(screen, game, dragger)
-                    pygame.display.flip()  # Faster than update()
-                    continue
-
-            # Minimal evaluation processing
-            if hasattr(game, 'evaluation_thread') and game.evaluation_thread and not game.evaluation_thread.is_alive():
-                with game.evaluation_lock:
-                    game.evaluation = game.evaluation_thread.evaluation
-                game.evaluation_thread = None
-
-            # Handle game over state
-            if game.game_over:
-                # Offer to save PGN once when game ends
-                if not self.pgn_save_offered and game.pgn.get_move_count() > 0:
-                    self.pgn_save_offered = True
-                    # Use threading to avoid blocking the main loop
-                    import threading
-                    threading.Thread(target=self._offer_save_pgn, args=(game,), daemon=True).start()
-                
-                self._render_game_state(screen, game, dragger)
-                self._render_game_over_overlay(screen, game)
-                pygame.display.flip()
-                
-                # Process events for restart
-                for event in pygame.event.get():
-                    if event.type == pygame.KEYDOWN:
-                        if event.key == pygame.K_r:
-                            self._reset_game(game)
-                        elif event.key == pygame.K_F11:
-                            self._toggle_fullscreen()
-                        elif event.key == pygame.K_s and pygame.key.get_pressed()[pygame.K_LCTRL]:
-                            # Allow manual save even after game over
-                            self._save_pgn(game)
-                    elif event.type == pygame.QUIT:
-                        self._cleanup_and_exit()
+            if self._process_engine_moves():
                 continue
-
-            # Schedule engine move if needed
-            if not dragger.dragging and (not hasattr(game, 'engine_thread') or not game.engine_thread):
-                if (game.next_player == 'white' and game.engine_white) or \
-                   (game.next_player == 'black' and game.engine_black):
-                    game.schedule_engine_move()
-
-            # Render normal game state
-            self._render_game_state(screen, game, dragger)
-
-            # Handle game events
-            for event in pygame.event.get():
-                if self._handle_game_event(event, game, board, dragger):
-                    continue
             
+            self._process_evaluation()
+            
+            if self.game.game_over:
+                self._handle_game_over()
+                continue
+            
+            self._schedule_engine_move()
+            self._render_game_state(self.screen, self.game, self.game.dragger)
+            self._handle_events()
             pygame.display.flip()
+    
+    def _perform_maintenance(self):
+        """Perform periodic maintenance tasks"""
+        current_time = pygame.time.get_ticks()
+        if current_time - self.last_maintenance > self.maintenance_interval:
+            self.game.periodic_maintenance()
+            self.last_maintenance = current_time
+    
+    def _process_engine_moves(self):
+        """Process engine moves and return True if move was made"""
+        if hasattr(self.game, 'engine_thread') and self.game.engine_thread:
+            self.game.check_engine_timeout()
+            if self.game.make_engine_move():
+                self._render_game_state(self.screen, self.game, self.game.dragger)
+                pygame.display.flip()
+                return True
+        return False
+    
+    def _process_evaluation(self):
+        """Process engine evaluation updates"""
+        if (hasattr(self.game, 'evaluation_thread') and 
+            self.game.evaluation_thread and 
+            not self.game.evaluation_thread.is_alive()):
+            with self.game.evaluation_lock:
+                self.game.evaluation = self.game.evaluation_thread.evaluation
+            self.game.evaluation_thread = None
+    
+    def _handle_game_over(self):
+        """Handle game over state"""
+        if not self.pgn_save_offered and self.game.pgn.get_move_count() > 0:
+            self.pgn_save_offered = True
+            import threading
+            threading.Thread(target=self._offer_save_pgn, args=(self.game,), daemon=True).start()
+        
+        self._render_game_state(self.screen, self.game, self.game.dragger)
+        self._render_game_over_overlay(self.screen, self.game)
+        pygame.display.flip()
+        
+        for event in pygame.event.get():
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_r:
+                    self._reset_game(self.game)
+                elif event.key == pygame.K_F11:
+                    self._toggle_fullscreen()
+                elif event.key == pygame.K_s and pygame.key.get_pressed()[pygame.K_LCTRL]:
+                    self._save_pgn(self.game)
+            elif event.type == pygame.QUIT:
+                self._cleanup_and_exit()
+    
+    def _schedule_engine_move(self):
+        """Schedule engine move if needed"""
+        if (not self.game.dragger.dragging and 
+            (not hasattr(self.game, 'engine_thread') or not self.game.engine_thread)):
+            if ((self.game.next_player == 'white' and self.game.engine_white) or 
+                (self.game.next_player == 'black' and self.game.engine_black)):
+                self.game.schedule_engine_move()
+    
+    def _handle_events(self):
+        """Handle pygame events"""
+        for event in pygame.event.get():
+            self._handle_game_event(event, self.game, self.game.board, self.game.dragger)
 
     def _render_game_state(self, screen, game, dragger):
         """Render the main game state with modern styling"""
@@ -134,95 +139,96 @@ class Main:
 
     def _render_modern_game_info(self, screen, game):
         """Render modern game information panel"""
-        # Info panel background
-        panel_width = 320
-        panel_height = 200
-        panel_x = WIDTH - panel_width - 20
-        panel_y = 20
+        panel_width, panel_height = 320, 200
+        panel_x, panel_y = WIDTH - panel_width - 20, 20
         
-        # Modern panel styling with shadow
-        shadow_surface = pygame.Surface((panel_width + 8, panel_height + 8), pygame.SRCALPHA)
-        pygame.draw.rect(shadow_surface, (0, 0, 0, 60), pygame.Rect(0, 0, panel_width + 8, panel_height + 8), border_radius=15)
-        screen.blit(shadow_surface, (panel_x + 4, panel_y + 4))
+        self._draw_panel_background(screen, panel_x, panel_y, panel_width, panel_height)
+        self._draw_panel_title(screen, panel_x, panel_y)
+        self._draw_game_mode_info(screen, game, panel_x, panel_y)
+        self._draw_engine_settings(screen, game, panel_x, panel_y)
+        self._draw_current_player(screen, game, panel_x, panel_y)
+        self._draw_control_hints(screen, game, panel_x, panel_y)
+        self._draw_system_info(screen, panel_x, panel_y)
+    
+    def _draw_panel_background(self, screen, x, y, width, height):
+        """Draw panel background with shadow"""
+        shadow_surface = pygame.Surface((width + 8, height + 8), pygame.SRCALPHA)
+        pygame.draw.rect(shadow_surface, (0, 0, 0, 60), pygame.Rect(0, 0, width + 8, height + 8), border_radius=15)
+        screen.blit(shadow_surface, (x + 4, y + 4))
         
-        panel_surface = pygame.Surface((panel_width, panel_height), pygame.SRCALPHA)
-        panel_bg_color = (40, 46, 58, 220)  # Semi-transparent
-        pygame.draw.rect(panel_surface, panel_bg_color, pygame.Rect(0, 0, panel_width, panel_height), border_radius=15)
-        pygame.draw.rect(panel_surface, (84, 92, 108, 255), pygame.Rect(0, 0, panel_width, panel_height), 2, border_radius=15)
-        screen.blit(panel_surface, (panel_x, panel_y))
-
-        # Title
+        panel_surface = pygame.Surface((width, height), pygame.SRCALPHA)
+        pygame.draw.rect(panel_surface, (40, 46, 58, 220), pygame.Rect(0, 0, width, height), border_radius=15)
+        pygame.draw.rect(panel_surface, (84, 92, 108, 255), pygame.Rect(0, 0, width, height), 2, border_radius=15)
+        screen.blit(panel_surface, (x, y))
+    
+    def _draw_panel_title(self, screen, x, y):
+        """Draw panel title"""
         title_font = self._get_cached_font('Segoe UI', 18, bold=True)
         title_surface = title_font.render("Game Status", True, (255, 255, 255))
-        screen.blit(title_surface, (panel_x + 20, panel_y + 15))
-
-        # Game mode section
-        mode_font = self._get_cached_font('Segoe UI', 14, bold=True)
-        mode_text = {
-            0: "Human vs Human",
-            1: "Human vs Engine", 
-            2: "Engine vs Engine"
-        }[game.game_mode]
+        screen.blit(title_surface, (x + 20, y + 15))
+    
+    def _draw_game_mode_info(self, screen, game, x, y):
+        """Draw game mode information"""
+        mode_text = {0: "Human vs Human", 1: "Human vs Engine", 2: "Engine vs Engine"}[game.game_mode]
         
+        mode_font = self._get_cached_font('Segoe UI', 14, bold=True)
         mode_label = mode_font.render("Mode:", True, (181, 181, 181))
-        screen.blit(mode_label, (panel_x + 20, panel_y + 45))
+        screen.blit(mode_label, (x + 20, y + 45))
         
         mode_value_font = self._get_cached_font('Segoe UI', 14)
         mode_value_surface = mode_value_font.render(mode_text, True, (255, 255, 255))
-        screen.blit(mode_value_surface, (panel_x + 70, panel_y + 45))
-        
-        # Engine settings
+        screen.blit(mode_value_surface, (x + 70, y + 45))
+    
+    def _draw_engine_settings(self, screen, game, x, y):
+        """Draw engine settings if engines are active"""
         if game.engine_white or game.engine_black:
             settings_font = self._get_cached_font('Segoe UI', 13)
             
             level_label = settings_font.render("Level:", True, (181, 181, 181))
-            screen.blit(level_label, (panel_x + 20, panel_y + 70))
-            
+            screen.blit(level_label, (x + 20, y + 70))
             level_value = settings_font.render(f"{game.level}/20", True, (129, 182, 76))
-            screen.blit(level_value, (panel_x + 70, panel_y + 70))
+            screen.blit(level_value, (x + 70, y + 70))
             
             depth_label = settings_font.render("Depth:", True, (181, 181, 181))
-            screen.blit(depth_label, (panel_x + 150, panel_y + 70))
-            
+            screen.blit(depth_label, (x + 150, y + 70))
             depth_value = settings_font.render(str(game.depth), True, (129, 182, 76))
-            screen.blit(depth_value, (panel_x + 200, panel_y + 70))
-        
-        # Current player indicator
+            screen.blit(depth_value, (x + 200, y + 70))
+    
+    def _draw_current_player(self, screen, game, x, y):
+        """Draw current player indicator"""
         player_font = self._get_cached_font('Segoe UI', 14, bold=True)
         player_label = player_font.render("Turn:", True, (181, 181, 181))
-        screen.blit(player_label, (panel_x + 20, panel_y + 100))
+        screen.blit(player_label, (x + 20, y + 100))
         
         player_color = (255, 255, 255) if game.next_player == 'white' else (200, 200, 200)
-        player_value = game.next_player.title()
-        player_surface = player_font.render(player_value, True, player_color)
-        screen.blit(player_surface, (panel_x + 70, panel_y + 100))
-        
-        # Controls hint
+        player_surface = player_font.render(game.next_player.title(), True, player_color)
+        screen.blit(player_surface, (x + 70, y + 100))
+    
+    def _draw_control_hints(self, screen, game, x, y):
+        """Draw control hints"""
         hint_font = self._get_cached_font('Segoe UI', 12)
+        
         hint_surface = hint_font.render("Press 'H' for controls", True, (129, 182, 76))
-        screen.blit(hint_surface, (panel_x + 20, panel_y + 130))
+        screen.blit(hint_surface, (x + 20, y + 130))
         
-        # Quick mode switch hint
         mode_hint = hint_font.render("1/2/3: Switch modes", True, (181, 181, 181))
-        screen.blit(mode_hint, (panel_x + 20, panel_y + 150))
+        screen.blit(mode_hint, (x + 20, y + 150))
         
-        # Engine controls hint
         if game.engine_white or game.engine_black:
             engine_hint = hint_font.render("+/-: Level, Ctrl+↑/↓: Depth", True, (181, 181, 181))
-            screen.blit(engine_hint, (panel_x + 20, panel_y + 170))
-        
-        # System info display
-        import threading
-        import os
-        thread_count = threading.active_count()
-        cpu_count = os.cpu_count() or 4
+            screen.blit(engine_hint, (x + 20, y + 170))
+    
+    def _draw_system_info(self, screen, x, y):
+        """Draw system information"""
+        from threading import active_count
+        from os import cpu_count
         
         info_font = self._get_cached_font('Segoe UI', 11)
-        thread_surface = info_font.render(f"Threads: {thread_count}", True, (100, 149, 237))
-        screen.blit(thread_surface, (panel_x + 200, panel_y + 170))
+        thread_surface = info_font.render(f"Threads: {active_count()}", True, (100, 149, 237))
+        screen.blit(thread_surface, (x + 200, y + 170))
         
-        cpu_surface = info_font.render(f"Cores: {cpu_count}", True, (255, 165, 0))
-        screen.blit(cpu_surface, (panel_x + 200, panel_y + 185))
+        cpu_surface = info_font.render(f"Cores: {cpu_count() or 4}", True, (255, 165, 0))
+        screen.blit(cpu_surface, (x + 200, y + 185))
     
     def _render_help_overlay(self, screen):
         """Render help overlay with all controls"""
@@ -338,8 +344,10 @@ class Main:
         try:
             game.reset()
             self.pgn_save_offered = False  # Reset PGN save flag for new game
+        except AttributeError as e:
+            print(f"Game state error resetting: {e}")
         except Exception as e:
-            print(f"Error resetting: {e}")
+            print(f"Unexpected error resetting: {e}")
     
     def _get_cached_font(self, name, size, bold=False):
         """Get cached font using resource manager"""
@@ -372,8 +380,10 @@ class Main:
             
             print("Cleanup completed successfully")
             
+        except AttributeError as e:
+            print(f"Resource cleanup error: {e}")
         except Exception as e:
-            print(f"Error during cleanup: {e}")
+            print(f"Unexpected cleanup error: {e}")
         finally:
             pygame.quit()
             sys.exit()
@@ -543,26 +553,39 @@ class Main:
     
     def _attempt_move(self, game, board, dragger, target_row, target_col):
         """Attempt to move the selected piece to the target square"""
-        initial = Square(dragger.initial_row, dragger.initial_col)
-        final = Square(target_row, target_col)
-        move = Move(initial, final)
-        
-        # Check if the move is valid
-        if board.valid_move(dragger.piece, move):
-            # Make the move
-            game.make_move(dragger.piece, move)
-            # Deselect the piece
+        try:
+            initial = Square(dragger.initial_row, dragger.initial_col)
+            final = Square(target_row, target_col)
+            move = Move(initial, final)
+            
+            # Check if the move is valid
+            if board.valid_move(dragger.piece, move):
+                # Make the move
+                game.make_move(dragger.piece, move)
+                # Deselect the piece
+                dragger.deselect_piece()
+            else:
+                # Invalid move - provide visual feedback
+                self._show_invalid_move_feedback(target_row, target_col)
+                # Keep piece selected for another attempt
+        except (AttributeError, IndexError) as e:
+            print(f"Move validation error: {e}")
             dragger.deselect_piece()
-        else:
-            # Invalid move - provide visual feedback
-            self._show_invalid_move_feedback(target_row, target_col)
-            # Keep piece selected for another attempt
+        except Exception as e:
+            print(f"Unexpected move error: {e}")
+            dragger.deselect_piece()
     
     def _show_invalid_move_feedback(self, row, col):
         """Show visual feedback for invalid moves"""
-        # This could be enhanced with a red flash or shake animation
-        # For now, we'll just keep the piece selected
-        pass
+        if not hasattr(self.game, 'invalid_move_feedback'):
+            self.game.invalid_move_feedback = {}
+        
+        self.game.invalid_move_feedback = {
+            'row': row,
+            'col': col,
+            'timestamp': pygame.time.get_ticks(),
+            'duration': 300
+        }
     
     def _show_no_moves_feedback(self, row, col):
         """Show visual feedback when a piece has no valid moves"""
@@ -626,8 +649,12 @@ class Main:
                 print("✅ PGN save started (background)")
             else:
                 print("❌ PGN save cancelled or failed")
+        except (IOError, OSError) as e:
+            print(f"File error saving PGN: {e}")
+        except ValueError as e:
+            print(f"Invalid data error saving PGN: {e}")
         except Exception as e:
-            print(f"Error saving PGN: {e}")
+            print(f"Unexpected error saving PGN: {e}")
     
     def _quick_save_pgn(self, game):
         """Quick save PGN without dialogs (non-blocking)"""
@@ -641,8 +668,12 @@ class Main:
                 print("✅ Quick save started (background)")
             else:
                 print("❌ Quick save failed")
+        except (IOError, OSError) as e:
+            print(f"File error quick saving PGN: {e}")
+        except ValueError as e:
+            print(f"Invalid data error quick saving PGN: {e}")
         except Exception as e:
-            print(f"Error quick saving PGN: {e}")
+            print(f"Unexpected error quick saving PGN: {e}")
     
     def _offer_draw(self, game):
         """Offer a draw"""
@@ -657,8 +688,10 @@ class Main:
                 print(f"🤝 Draw offered by {current_player}")
             else:
                 print("❌ Cannot offer draw at this time")
+        except AttributeError as e:
+            print(f"Game state error offering draw: {e}")
         except Exception as e:
-            print(f"Error offering draw: {e}")
+            print(f"Unexpected error offering draw: {e}")
     
     def _accept_draw(self, game):
         """Accept a draw offer"""
@@ -673,8 +706,10 @@ class Main:
                 print(f"🤝 Draw accepted by {current_player}")
             else:
                 print("❌ Cannot accept draw")
+        except AttributeError as e:
+            print(f"Game state error accepting draw: {e}")
         except Exception as e:
-            print(f"Error accepting draw: {e}")
+            print(f"Unexpected error accepting draw: {e}")
     
     def _decline_draw(self, game):
         """Decline a draw offer"""
@@ -689,8 +724,10 @@ class Main:
                 print(f"❌ Draw declined by {current_player}")
             else:
                 print("Cannot decline draw")
+        except AttributeError as e:
+            print(f"Game state error declining draw: {e}")
         except Exception as e:
-            print(f"Error declining draw: {e}")
+            print(f"Unexpected error declining draw: {e}")
     
     def _claim_draw(self, game):
         """Claim a draw (show available claims)"""
@@ -714,8 +751,12 @@ class Main:
                     print(f"⚖️ Draw claimed successfully")
                 else:
                     print("❌ Failed to claim draw")
+        except AttributeError as e:
+            print(f"Game state error claiming draw: {e}")
+        except ImportError as e:
+            print(f"Module import error claiming draw: {e}")
         except Exception as e:
-            print(f"Error claiming draw: {e}")
+            print(f"Unexpected error claiming draw: {e}")
     
     def _offer_save_pgn(self, game):
         """Offer to save PGN when game ends (runs in separate thread)"""
@@ -726,9 +767,11 @@ class Main:
             
             if game.pgn.get_move_count() > 0:
                 game.pgn.save_game()
+        except (IOError, OSError) as e:
+            print(f"File error offering PGN save: {e}")
         except Exception as e:
-            print(f"Error offering PGN save: {e}")
+            print(f"Unexpected error offering PGN save: {e}")
 
 if __name__ == '__main__':
-    main = Main()
-    main.mainloop()
+    app = ChessApplication()
+    app.mainloop()

@@ -1,5 +1,5 @@
 # resource_manager.py - Comprehensive resource management system
-import pygame
+from pygame import Surface, image, font, mixer, transform, SRCALPHA, get_init, init
 import threading
 import weakref
 import os
@@ -15,15 +15,19 @@ class ResourceManager:
     _lock = threading.Lock()
     
     def __new__(cls):
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._initialized = False
+        # Fast path: avoid lock if instance exists
+        if cls._instance is not None:
+            return cls._instance
+            
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+                cls._instance._initialized = False
         return cls._instance
     
     def __init__(self):
-        if self._initialized:
+        # Fast path: avoid repeated initialization
+        if getattr(self, '_initialized', False):
             return
             
         self.image_cache = {}
@@ -31,20 +35,21 @@ class ResourceManager:
         self.sound_cache = {}
         self.surface_cache = {}
         self._cleanup_registered = False
-        self._initialized = True
         
         # Initialize pygame if not already done
-        if not pygame.get_init():
-            pygame.init()
-        if not pygame.font.get_init():
-            pygame.font.init()
+        if not get_init():
+            init()
+        if not font.get_init():
+            font.init()
         
         # Register cleanup
         import atexit
         atexit.register(self.cleanup_all)
+        
+        self._initialized = True
     
     @lru_cache(maxsize=64)
-    def get_piece_image(self, piece_name: str, color: str, size: int) -> Optional[pygame.Surface]:
+    def get_piece_image(self, piece_name: str, color: str, size: int) -> Optional[Surface]:
         """Get cached piece image"""
         cache_key = f"{piece_name}_{color}_{size}"
         
@@ -62,20 +67,20 @@ class ResourceManager:
         for path in image_paths:
             if os.path.exists(path):
                 try:
-                    image = pygame.image.load(path).convert_alpha()
+                    img = image.load(path).convert_alpha()
                     if size != 80:  # Scale if needed
-                        image = pygame.transform.smoothscale(image, (size, size))
-                    self.image_cache[cache_key] = image
-                    return image
+                        img = transform.smoothscale(img, (size, size))
+                    self.image_cache[cache_key] = img
+                    return img
                 except Exception as e:
-                    logger.warning(f"Failed to load image {path}: {e}")
+                    logger.warning("Failed to load image %s: %s", path.replace('\n', '').replace('\r', ''), str(e).replace('\n', '').replace('\r', ''))
         
         # Return None if no image found
-        logger.warning(f"No image found for {cache_key}")
+        logger.warning("No image found for %s", cache_key.replace('\n', '').replace('\r', ''))
         return None
     
     @lru_cache(maxsize=32)
-    def get_font(self, name: str, size: int, bold: bool = False) -> pygame.font.Font:
+    def get_font(self, name: str, size: int, bold: bool = False) -> font.Font:
         """Get cached font"""
         cache_key = f"{name}_{size}_{bold}"
         
@@ -84,20 +89,20 @@ class ResourceManager:
         
         try:
             if name.lower() in ['segoe ui', 'arial', 'helvetica']:
-                font = pygame.font.SysFont(name, size, bold=bold)
+                fnt = font.SysFont(name, size, bold=bold)
             else:
-                font = pygame.font.Font(name, size)
+                fnt = font.Font(name, size)
             
-            self.font_cache[cache_key] = font
-            return font
+            self.font_cache[cache_key] = fnt
+            return fnt
         except Exception as e:
-            logger.warning(f"Failed to load font {name}: {e}")
+            logger.warning("Failed to load font %s: %s", name.replace('\n', '').replace('\r', ''), str(e).replace('\n', '').replace('\r', ''))
             # Fallback to default font
-            font = pygame.font.Font(None, size)
-            self.font_cache[cache_key] = font
-            return font
+            fnt = font.Font(None, size)
+            self.font_cache[cache_key] = fnt
+            return fnt
     
-    def get_sound(self, filename: str) -> Optional[pygame.mixer.Sound]:
+    def get_sound(self, filename: str) -> Optional[mixer.Sound]:
         """Get cached sound"""
         if filename in self.sound_cache:
             return self.sound_cache[filename]
@@ -110,21 +115,21 @@ class ResourceManager:
         for path in sound_paths:
             if os.path.exists(path):
                 try:
-                    sound = pygame.mixer.Sound(path)
+                    sound = mixer.Sound(path)
                     self.sound_cache[filename] = sound
                     return sound
                 except Exception as e:
-                    logger.warning(f"Failed to load sound {path}: {e}")
+                    logger.warning("Failed to load sound %s: %s", path.replace('\n', '').replace('\r', ''), str(e).replace('\n', '').replace('\r', ''))
         
-        logger.warning(f"Sound file not found: {filename}")
+        logger.warning("Sound file not found: %s", filename.replace('\n', '').replace('\r', ''))
         return None
     
-    def create_surface(self, width: int, height: int, alpha: bool = False) -> pygame.Surface:
+    def create_surface(self, width: int, height: int, alpha: bool = False) -> Surface:
         """Create optimized surface"""
         if alpha:
-            surface = pygame.Surface((width, height), pygame.SRCALPHA)
+            surface = Surface((width, height), SRCALPHA)
         else:
-            surface = pygame.Surface((width, height))
+            surface = Surface((width, height))
             surface = surface.convert()
         return surface
     
@@ -154,7 +159,7 @@ class ResourceManager:
                 logger.info("Surface cache cleared")
                 
         except Exception as e:
-            logger.error(f"Error cleaning up cache: {e}")
+            logger.error("Error cleaning up cache: %s", str(e).replace('\n', '').replace('\r', ''))
     
     def cleanup_all(self):
         """Cleanup all resources"""

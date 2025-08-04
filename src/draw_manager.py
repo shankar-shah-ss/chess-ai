@@ -3,11 +3,10 @@ Professional-grade draw mechanism system for chess
 Implements all official FIDE draw conditions with comprehensive detection and management
 """
 
-import hashlib
+from hashlib import md5
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
 from enum import Enum
-import time
 
 class DrawType(Enum):
     """All possible draw types in chess"""
@@ -121,7 +120,7 @@ class DrawManager:
         
         # Create hash
         position_string = "|".join(position_data)
-        return hashlib.md5(position_string.encode()).hexdigest()
+        return md5(position_string.encode()).hexdigest()
     
     def update_position(self, board, current_player: str, castling_rights: Dict,
                        en_passant_square: Optional[Tuple[int, int]] = None,

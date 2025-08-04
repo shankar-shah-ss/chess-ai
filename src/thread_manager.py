@@ -40,13 +40,17 @@ class ThreadManager:
         if self._shutdown:
             raise RuntimeError("ThreadManager is shutting down")
         
-        future = self.thread_pool.submit(func, *args, **kwargs)
-        self.futures.append(future)
-        
-        # Clean up completed futures
-        self.futures = [f for f in self.futures if not f.done()]
-        
-        return future
+        try:
+            future = self.thread_pool.submit(func, *args, **kwargs)
+            self.futures.append(future)
+            
+            # Clean up completed futures
+            self.futures = [f for f in self.futures if not f.done()]
+            
+            return future
+        except RuntimeError as e:
+            logger.error(f"Failed to submit task to thread pool: {e}")
+            raise
     
     def create_thread(self, target: Callable, name: str = None, daemon: bool = True, *args, **kwargs) -> threading.Thread:
         """Create and register a managed thread"""
@@ -64,15 +68,20 @@ class ThreadManager:
             for future in self.futures:
                 try:
                     future.result(timeout=timeout)
+                except TimeoutError:
+                    logger.warning(f"Task timed out after {timeout} seconds")
                 except Exception as e:
                     logger.warning(f"Task failed: {e}")
             
             # Wait for individual threads
             for thread in list(self.active_threads):
                 if thread.is_alive():
-                    thread.join(timeout=1.0)
-                    if thread.is_alive():
-                        logger.warning(f"Thread {thread.name} did not terminate gracefully")
+                    try:
+                        thread.join(timeout=1.0)
+                        if thread.is_alive():
+                            logger.warning(f"Thread {thread.name} did not terminate gracefully")
+                    except Exception as e:
+                        logger.error(f"Error joining thread {thread.name}: {e}")
             
             return True
         except Exception as e:
@@ -115,13 +124,20 @@ class ThreadManager:
         except Exception as e:
             logger.error(f"Error shutting down thread pool: {e}")
         
-        # Force cleanup remaining threads
-        for thread in list(self.active_threads):
-            if thread.is_alive():
-                logger.warning(f"Force terminating thread: {thread.name}")
-                # Note: Python doesn't have thread.terminate(), so we just log
+        # Log remaining active threads (Python threads cannot be forcibly terminated)
+        self._log_remaining_threads()
         
         logger.info("Thread manager cleanup completed")
+    
+    def _log_remaining_threads(self):
+        """Log any remaining active threads for debugging"""
+        remaining_threads = [t for t in self.active_threads if t.is_alive()]
+        if remaining_threads:
+            logger.warning(f"Found {len(remaining_threads)} threads still active after cleanup")
+            for thread in remaining_threads:
+                logger.warning(f"Active thread: {thread.name} (daemon: {thread.daemon})")
+        else:
+            logger.info("All threads cleaned up successfully")
     
     def get_stats(self) -> dict:
         """Get thread manager statistics"""
@@ -184,24 +200,38 @@ class EngineWorkerThread(ManagedWorkerThread):
     def run(self):
         """Run engine calculation"""
         try:
-            if self.is_stopped():
+            if self._should_skip_calculation():
                 return
             
-            if not self.engine or not self.engine._is_healthy:
-                logger.warning("Engine not healthy, skipping move calculation")
-                return
-            
-            # Set position and get move
-            if self.engine.set_position(self.fen):
-                if not self.is_stopped():
-                    self.move = self.engine.get_best_move()
-                    if self.move and not self.is_stopped():
-                        self.move_queue.put(self.move)
-                        logger.info(f"Engine move calculated: {self.move}")
+            self._calculate_and_queue_move()
             
         except Exception as e:
             logger.error(f"Engine worker error: {e}")
             self._error = e
+    
+    def _should_skip_calculation(self):
+        """Check if calculation should be skipped"""
+        if self.is_stopped():
+            return True
+        
+        if not self.engine or not self.engine._is_healthy:
+            logger.warning("Engine not healthy, skipping move calculation")
+            return True
+        
+        return False
+    
+    def _calculate_and_queue_move(self):
+        """Calculate move and add to queue if valid"""
+        if not self.engine.set_position(self.fen):
+            return
+        
+        if self.is_stopped():
+            return
+        
+        self.move = self.engine.get_best_move()
+        if self.move and not self.is_stopped():
+            self.move_queue.put(self.move)
+            logger.info(f"Engine move calculated: {self.move}")
 
 class EvaluationWorkerThread(ManagedWorkerThread):
     """Enhanced evaluation worker with proper cleanup"""
@@ -216,22 +246,36 @@ class EvaluationWorkerThread(ManagedWorkerThread):
     def run(self):
         """Run position evaluation"""
         try:
-            if self.is_stopped():
+            if self._should_skip_evaluation():
                 return
             
-            if not self.engine or not self.engine._is_healthy:
-                logger.warning("Engine not healthy, skipping evaluation")
-                return
-            
-            # Set position and get evaluation
-            if self.engine.set_position(self.fen):
-                if not self.is_stopped():
-                    self.evaluation = self.engine.get_evaluation()
-                    logger.debug(f"Position evaluated: {self.evaluation}")
+            self._calculate_evaluation()
             
         except Exception as e:
             logger.error(f"Evaluation worker error: {e}")
             self._error = e
+    
+    def _should_skip_evaluation(self):
+        """Check if evaluation should be skipped"""
+        if self.is_stopped():
+            return True
+        
+        if not self.engine or not self.engine._is_healthy:
+            logger.warning("Engine not healthy, skipping evaluation")
+            return True
+        
+        return False
+    
+    def _calculate_evaluation(self):
+        """Calculate position evaluation"""
+        if not self.engine.set_position(self.fen):
+            return
+        
+        if self.is_stopped():
+            return
+        
+        self.evaluation = self.engine.get_evaluation()
+        logger.debug(f"Position evaluated: {self.evaluation}")
 
 # Global thread manager instance
 thread_manager = ThreadManager()

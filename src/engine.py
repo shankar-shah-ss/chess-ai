@@ -1,21 +1,22 @@
 # engine.py - Enhanced version with improved thread safety and resource management
 from stockfish import Stockfish
-import chess
-import os
+from chess import Board, Move, STARTING_FEN
+from os import environ, path, cpu_count
+from os.path import exists, expanduser
 import time
-import threading
+from threading import RLock, Lock
 import weakref
 from typing import Optional, Dict, Any
-import logging
+from logging import basicConfig, getLogger, INFO
 
 # Configure logging for engine
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+basicConfig(level=INFO)
+logger = getLogger(__name__)
 
 class EnginePool:
     """Singleton engine pool for better resource management"""
     _instance = None
-    _lock = threading.Lock()
+    _lock = Lock()
     
     def __new__(cls):
         if cls._instance is None:
@@ -60,27 +61,27 @@ class ChessEngine:
             "/usr/games/stockfish",  # Common Linux path
             "/opt/homebrew/bin/stockfish",
             "C:/Program Files/Stockfish/stockfish.exe",
-            os.path.expanduser("~/stockfish/stockfish.exe"),
+            expanduser("~/stockfish/stockfish.exe"),
         ]
         
         # Check environment variable
-        if "STOCKFISH_PATH" in os.environ:
-            stockfish_path = os.environ["STOCKFISH_PATH"]
+        if "STOCKFISH_PATH" in environ:
+            stockfish_path = environ["STOCKFISH_PATH"]
         else:
             # Check possible paths
-            for path in possible_paths:
-                if os.path.exists(path):
-                    stockfish_path = path
+            for possible_path in possible_paths:
+                if exists(possible_path):
+                    stockfish_path = possible_path
                     break
         
         if stockfish_path is None:
             raise Exception("Stockfish not found. Please set STOCKFISH_PATH environment variable.")
         
         self.stockfish_path = stockfish_path  # Store for recovery
-        self.engine_lock = threading.RLock()  # Use RLock for nested locking
+        self.engine_lock = RLock()  # Use RLock for nested locking
         self.engine = self._create_engine(skill_level, depth)
-        self.board = chess.Board()
-        self.last_fen = chess.STARTING_FEN  # Track last valid position
+        self.board = Board()
+        self.last_fen = STARTING_FEN  # Track last valid position
         
         # Register with engine pool for cleanup
         EnginePool().register_engine(self)
@@ -89,7 +90,7 @@ class ChessEngine:
     def _test_engine_health(self, engine):
         """Test if engine is responsive"""
         try:
-            engine.set_fen_position(chess.STARTING_FEN)
+            engine.set_fen_position(STARTING_FEN)
             return engine.get_best_move() is not None
         except:
             return False
@@ -139,18 +140,17 @@ class ChessEngine:
     
     def _configure_engine_options(self, engine):
         """Configure engine for maximum multi-core performance"""
-        import os
-        cpu_count = os.cpu_count() or 4  # Fallback to 4 if detection fails
+        cores = cpu_count() or 4  # Fallback to 4 if detection fails
         
         try:
             if hasattr(engine, '_stockfish') and engine._stockfish:
                 try:
                     # Use all available CPU cores
-                    engine._stockfish.stdin.write(f"setoption name Threads value {cpu_count}\n")
+                    engine._stockfish.stdin.write(f"setoption name Threads value {cores}\n")
                     engine._stockfish.stdin.flush()
                     
                     # Increase hash table size for better performance (MB)
-                    hash_size = min(512, cpu_count * 64)  # Scale with cores, max 512MB
+                    hash_size = min(512, cores * 64)  # Scale with cores, max 512MB
                     engine._stockfish.stdin.write(f"setoption name Hash value {hash_size}\n")
                     engine._stockfish.stdin.flush()
                     
@@ -162,74 +162,82 @@ class ChessEngine:
                     engine._stockfish.stdin.write("setoption name Contempt value 0\n")
                     engine._stockfish.stdin.flush()
                     
-                    logger.info(f"Engine optimized for {cpu_count} cores with {hash_size}MB hash")
+                    logger.info(f"Engine optimized for {cores} cores with {hash_size}MB hash")
                     return True
-                except Exception as e:
+                except (AttributeError, IOError) as e:
                     logger.warning(f"Failed to configure engine options: {e}")
                     return False
-        except Exception as e:
+        except (AttributeError, IOError) as e:
             logger.error(f"Error configuring engine options: {e}")
             return False
+    
+    def _apply_skill_level(self, level):
+        """Apply skill level with error recovery"""
+        try:
+            if level >= 20:
+                print(f"Engine set to UNLIMITED STRENGTH (level {level})")
+                if self.depth >= 20:
+                    self.engine.set_depth(0)  # Unlimited depth
+                self._configure_engine_options(self.engine)
+            else:
+                self.engine.set_skill_level(level)
+        except (AttributeError, ValueError) as e:
+            print(f"Error setting skill level: {e}")
+            if self._recover_engine() and self.engine:
+                try:
+                    if level >= 20:
+                        print(f"Engine set to UNLIMITED STRENGTH (level {level}) after recovery")
+                    else:
+                        self.engine.set_skill_level(level)
+                except (AttributeError, ValueError) as e2:
+                    print(f"Failed to set skill level after recovery: {e2}")
+    
+    def _apply_depth(self, depth):
+        """Apply depth setting with error recovery"""
+        try:
+            if self.skill_level >= 20 and depth >= 20:
+                # Cap maximum depth to prevent infinite thinking
+                max_depth = min(depth, 25)  # Maximum 25 ply depth
+                self.engine.set_depth(max_depth)
+                print(f"Engine set to MAXIMUM DEPTH (depth {max_depth}, requested {depth})")
+            else:
+                self.engine.set_depth(depth)
+        except (AttributeError, ValueError) as e:
+            print(f"Error setting depth: {e}")
+            if self._recover_engine() and self.engine:
+                try:
+                    if self.skill_level >= 20 and depth >= 20:
+                        max_depth = min(depth, 25)
+                        self.engine.set_depth(max_depth)
+                        print(f"Engine set to MAXIMUM DEPTH (depth {max_depth}) after recovery")
+                    else:
+                        self.engine.set_depth(depth)
+                except (AttributeError, ValueError) as e2:
+                    print(f"Failed to set depth after recovery: {e2}")
         
     def set_skill_level(self, level):
         self.skill_level = level
         with self.engine_lock:
             if not self.engine or not self._check_engine_health():
                 return
-            try:
-                if level >= 20:
-                    print(f"Engine set to UNLIMITED STRENGTH (level {level})")
-                    if self.depth >= 20:
-                        self.engine.set_depth(0)  # Unlimited depth
-                    self._configure_engine_options(self.engine)
-                else:
-                    self.engine.set_skill_level(level)
-            except Exception as e:
-                print(f"Error setting skill level: {e}")
-                if self._recover_engine() and self.engine:
-                    try:
-                        if level >= 20:
-                            print(f"Engine set to UNLIMITED STRENGTH (level {level}) after recovery")
-                        else:
-                            self.engine.set_skill_level(level)
-                    except Exception as e2:
-                        print(f"Failed to set skill level after recovery: {e2}")
+            self._apply_skill_level(level)
         
     def set_depth(self, depth):
         self.depth = depth
         with self.engine_lock:
             if not self.engine or not self._check_engine_health():
                 return
-            try:
-                if self.skill_level >= 20 and depth >= 20:
-                    # Cap maximum depth to prevent infinite thinking
-                    max_depth = min(depth, 25)  # Maximum 25 ply depth
-                    self.engine.set_depth(max_depth)
-                    print(f"Engine set to MAXIMUM DEPTH (depth {max_depth}, requested {depth})")
-                else:
-                    self.engine.set_depth(depth)
-            except Exception as e:
-                print(f"Error setting depth: {e}")
-                if self._recover_engine() and self.engine:
-                    try:
-                        if self.skill_level >= 20 and depth >= 20:
-                            max_depth = min(depth, 25)
-                            self.engine.set_depth(max_depth)
-                            print(f"Engine set to MAXIMUM DEPTH (depth {max_depth}) after recovery")
-                        else:
-                            self.engine.set_depth(depth)
-                    except Exception as e2:
-                        print(f"Failed to set depth after recovery: {e2}")
+            self._apply_depth(depth)
         
     def set_position(self, fen):
         # Validate FEN before using
         if not fen or not isinstance(fen, str) or len(fen.strip()) == 0:
             return False
         try:
-            test_board = chess.Board(fen)  # Test if FEN is valid
+            test_board = Board(fen)  # Test if FEN is valid
             if not test_board.is_valid():
                 return False
-        except Exception as e:
+        except (ValueError, AttributeError) as e:
             print(f"Invalid FEN: {fen}, error: {e}")
             return False
             
@@ -239,16 +247,16 @@ class ChessEngine:
             try:
                 self.last_fen = fen  # Store last valid FEN
                 self.engine.set_fen_position(fen)
-                self.board = chess.Board(fen)
+                self.board = Board(fen)
                 return True
-            except Exception as e:
+            except (AttributeError, ValueError) as e:
                 print(f"Error setting position: {e}")
                 if self._recover_engine() and self.engine:
                     try:
                         self.engine.set_fen_position(fen)
-                        self.board = chess.Board(fen)
+                        self.board = Board(fen)
                         return True
-                    except Exception as e2:
+                    except (AttributeError, ValueError) as e2:
                         print(f"Failed to set position after recovery: {e2}")
                         return False
                 return False
@@ -291,23 +299,23 @@ class ChessEngine:
                             if move is not None:
                                 print(f"Fallback successful at depth {fallback_depth}")
                                 break
-                        except Exception as e:
+                        except (AttributeError, ValueError, RuntimeError) as e:
                             print(f"Fallback failed at depth {fallback_depth}: {e}")
                             continue
                     
                     # Restore original depth
                     try:
                         self.engine.set_depth(original_depth)
-                    except:
+                    except (AttributeError, ValueError):
                         pass
                 return move
-            except Exception as e:
+            except (AttributeError, ValueError, RuntimeError) as e:
                 print(f"Error getting best move: {e}")
                 if self._recover_engine() and self.engine:
                     try:
                         # Use shorter time limit for recovery
                         return self.engine.get_best_move_time(min(time_limit or 2000, 2000))
-                    except Exception as e2:
+                    except (AttributeError, ValueError, RuntimeError) as e2:
                         print(f"Failed to get best move after recovery: {e2}")
                         return None
                 return None
@@ -321,12 +329,12 @@ class ChessEngine:
                 if eval_result is None:
                     print("Engine returned None for evaluation")
                 return eval_result
-            except Exception as e:
+            except (AttributeError, ValueError, RuntimeError) as e:
                 print(f"Error getting evaluation: {e}")
                 if self._recover_engine() and self.engine:
                     try:
                         return self.engine.get_evaluation()
-                    except Exception as e2:
+                    except (AttributeError, ValueError, RuntimeError) as e2:
                         print(f"Failed to get evaluation after recovery: {e2}")
                         return None
                 return None
@@ -334,15 +342,17 @@ class ChessEngine:
     def make_move(self, uci_move):
         with self.engine_lock:
             try:
-                self.board.push(chess.Move.from_uci(uci_move))
-            except:
+                self.board.push(Move.from_uci(uci_move))
+            except (AttributeError, ValueError) as e:
+                print(f"Error making move: {e}")
                 self._recover_engine()
         
     def is_game_over(self):
         with self.engine_lock:
             try:
                 return self.board.is_game_over()
-            except:
+            except (AttributeError, ValueError) as e:
+                print(f"Error checking game over: {e}")
                 self._recover_engine()
                 return self.board.is_game_over()
     
@@ -356,7 +366,8 @@ class ChessEngine:
                 self.board.reset()
                 self.engine.set_fen_position(self.board.fen())
                 self.last_fen = self.board.fen()
-            except:
+            except (AttributeError, ValueError) as e:
+                print(f"Error resetting engine: {e}")
                 self._recover_engine()
                 
     def _recover_engine(self):
@@ -373,9 +384,9 @@ class ChessEngine:
             if hasattr(self.engine, '_stockfish'):
                 try:
                     self.engine._stockfish.terminate()
-                except:
+                except (AttributeError, OSError):
                     pass
-        except:
+        except (AttributeError, OSError):
             pass
         
         try:
@@ -385,18 +396,18 @@ class ChessEngine:
             # Restore last known position
             if self.last_fen:
                 self.engine.set_fen_position(self.last_fen)
-                self.board = chess.Board(self.last_fen)
+                self.board = Board(self.last_fen)
             else:
                 # Fallback to starting position
-                self.engine.set_fen_position(chess.STARTING_FEN)
-                self.board = chess.Board()
-                self.last_fen = chess.STARTING_FEN
+                self.engine.set_fen_position(STARTING_FEN)
+                self.board = Board()
+                self.last_fen = STARTING_FEN
                 
             # Reset recovery counter on success
             self.recovery_attempts = 0
             self._is_healthy = True
             return True
-        except Exception as e:
+        except (AttributeError, ValueError, RuntimeError) as e:
             print(f"Engine recovery failed: {e}")
             if self.recovery_attempts >= self.max_recovery_attempts:
                 self._is_healthy = False
@@ -411,19 +422,19 @@ class ChessEngine:
                         try:
                             self.engine._stockfish.terminate()
                             self.engine._stockfish.wait(timeout=2)
-                        except:
+                        except (AttributeError, OSError):
                             try:
                                 self.engine._stockfish.kill()
-                            except:
+                            except (AttributeError, OSError):
                                 pass
                     self.engine = None
                 logger.info("Engine cleanup completed")
-            except Exception as e:
+            except (AttributeError, OSError) as e:
                 logger.error(f"Error during engine cleanup: {e}")
     
     def __del__(self):
         """Destructor to ensure cleanup"""
         try:
             self.cleanup()
-        except:
+        except (AttributeError, OSError):
             pass

@@ -25,7 +25,9 @@ class EngineWorker(Thread):
         self.move_queue = move_queue
         self.engine = engine or game.engine  # Use specific engine or fallback
         self.daemon = True
-        self.priority = threading.THREAD_PRIORITY_ABOVE_NORMAL if hasattr(threading, 'THREAD_PRIORITY_ABOVE_NORMAL') else None
+        self.priority = (threading.THREAD_PRIORITY_ABOVE_NORMAL
+                         if hasattr(threading, 'THREAD_PRIORITY_ABOVE_NORMAL')
+                         else None)
         self.start_time = None
 
     def run(self):
@@ -665,7 +667,7 @@ class Game:
                 self.config.capture_sound.play()
             else:
                 self.config.move_sound.play()
-        except:
+        except (AttributeError, OSError):
             pass  # Handle missing sound files gracefully
 
     def reset(self):
@@ -805,6 +807,11 @@ class Game:
                 return True
         except queue.Empty:
             return False
+        except (IndexError, AttributeError) as e:
+            print(f"Invalid move data from engine: {e}")
+            with self.thread_cleanup_lock:
+                self.engine_thread = None
+            return False
         except Exception as e:
             print(f"Error making engine move: {e}")
             with self.thread_cleanup_lock:
@@ -840,6 +847,20 @@ class Game:
                 except Exception as e:
                     print(f"Error scheduling engine move: {e}")
     
+    def _calculate_engine_timeout(self):
+        """Calculate engine timeout based on current settings"""
+        if not hasattr(self, 'level') or not hasattr(self, 'depth'):
+            return 8  # Default timeout
+        
+        if self.level >= 20 and self.depth >= 20:
+            return 30  # Maximum strength
+        elif self.level >= 18 or self.depth >= 18:
+            return 20  # Very high strength
+        elif self.level >= 15 or self.depth >= 15:
+            return 12  # High strength
+        else:
+            return 8   # Normal play
+    
     def check_engine_timeout(self):
         """Check if engine thread has been running too long and terminate if needed"""
         with self.thread_cleanup_lock:
@@ -847,17 +868,8 @@ class Game:
                 if hasattr(self.engine_thread, 'start_time') and self.engine_thread.start_time:
                     elapsed = time.time() - self.engine_thread.start_time
                     
-                    # Set timeout based on settings - increased for maximum depth
-                    max_timeout = 30  # 30 seconds absolute maximum
-                    if hasattr(self, 'level') and hasattr(self, 'depth'):
-                        if self.level >= 20 and self.depth >= 20:
-                            max_timeout = 30  # 30 seconds for maximum strength
-                        elif self.level >= 18 or self.depth >= 18:
-                            max_timeout = 20  # 20 seconds for very high strength
-                        elif self.level >= 15 or self.depth >= 15:
-                            max_timeout = 12  # 12 seconds for high strength
-                        else:
-                            max_timeout = 8   # 8 seconds for normal play
+                    # Set timeout based on settings
+                    max_timeout = self._calculate_engine_timeout()
                     
                     if elapsed > max_timeout:
                         print(f"⚠️ Engine timeout after {elapsed:.1f}s (max: {max_timeout}s) - forcing move")
@@ -922,22 +934,15 @@ class Game:
             self.pgn.end_game(result, "Checkmate")
             return
         
-        # Use professional-grade draw manager
+        # Check for draws using professional draw manager
+        self._check_draw_conditions()
+    
+    def _check_draw_conditions(self):
+        """Check for draw conditions using professional draw manager"""
         try:
-            # Check if draw manager detected an automatic draw
             draw_status = self.draw_manager.get_draw_status()
             
-            if draw_status['game_over'] and draw_status['draw_result']:
-                self.game_over = True
-                self.winner = None
-                draw_condition = draw_status['draw_result']
-                
-                # Record PGN result with detailed reason
-                reason = self.draw_manager.get_draw_description(draw_condition)
-                self.pgn.end_game("1/2-1/2", reason)
-                
-                # Store draw result for UI display
-                self.draw_result = draw_condition
+            if self._handle_automatic_draw(draw_status):
                 return
             
             # Update claimable draws for UI display
@@ -945,8 +950,23 @@ class Game:
             
         except Exception as e:
             print(f"Error in professional draw system, falling back to legacy: {e}")
-            # Fallback to legacy draw detection
             self._check_legacy_draws()
+    
+    def _handle_automatic_draw(self, draw_status):
+        """Handle automatic draw conditions"""
+        if draw_status['game_over'] and draw_status['draw_result']:
+            self.game_over = True
+            self.winner = None
+            draw_condition = draw_status['draw_result']
+            
+            # Record PGN result with detailed reason
+            reason = self.draw_manager.get_draw_description(draw_condition)
+            self.pgn.end_game("1/2-1/2", reason)
+            
+            # Store draw result for UI display
+            self.draw_result = draw_condition
+            return True
+        return False
     
     def _check_legacy_draws(self):
         """Legacy draw detection system (fallback)"""
@@ -979,7 +999,7 @@ class Game:
             
     def _is_insufficient_material(self):
         """Check for insufficient material to checkmate"""
-        # Count pieces for both sides
+        # Count pieces for both sides in single pass
         white_pieces = []
         black_pieces = []
         white_bishops = []
@@ -988,21 +1008,16 @@ class Game:
         for row in range(ROWS):
             for col in range(COLS):
                 piece = self.board.squares[row][col].piece
-                if piece:
+                if piece and piece.name.lower() != 'king':
+                    piece_name = piece.name.lower()
                     if piece.color == 'white':
-                        if piece.name.lower() != 'king':
-                            white_pieces.append(piece.name.lower())
-                            if piece.name.lower() == 'bishop':
-                                # Track bishop square color (light or dark)
-                                square_color = 'light' if (row + col) % 2 == 0 else 'dark'
-                                white_bishops.append(square_color)
+                        white_pieces.append(piece_name)
+                        if piece_name == 'bishop':
+                            white_bishops.append('light' if (row + col) % 2 == 0 else 'dark')
                     else:
-                        if piece.name.lower() != 'king':
-                            black_pieces.append(piece.name.lower())
-                            if piece.name.lower() == 'bishop':
-                                # Track bishop square color (light or dark)
-                                square_color = 'light' if (row + col) % 2 == 0 else 'dark'
-                                black_bishops.append(square_color)
+                        black_pieces.append(piece_name)
+                        if piece_name == 'bishop':
+                            black_bishops.append('light' if (row + col) % 2 == 0 else 'dark')
         
         # King vs King
         if not white_pieces and not black_pieces:
@@ -1102,9 +1117,14 @@ class Game:
         try:
             draw_status = self.draw_manager.get_draw_status()
             return len(draw_status['claimable_draws']) > 0
-        except:
+        except (AttributeError, KeyError, Exception):
             # Fallback to legacy system
-            return self.board.is_threefold_repetition() or self.board.is_fifty_move_rule()
+            return self._check_legacy_draw_claims()
+    
+    def _check_legacy_draw_claims(self):
+        """Check for claimable draws using legacy system"""
+        return (self.board.is_threefold_repetition() or 
+                self.board.is_fifty_move_rule())
     
     def get_claimable_draws(self):
         """Get list of draws that can be claimed"""

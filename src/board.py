@@ -1,10 +1,10 @@
 # [file name]: board.py
 from const import *
 from square import Square
-from piece import *
+from piece import Piece, Pawn, Knight, Bishop, Rook, Queen, King
 from move import Move
-import copy
-import os
+from copy import deepcopy
+from os.path import join, exists
 from sound import Sound
 
 class Board:
@@ -62,9 +62,9 @@ class Board:
                 captured_pawn_col = final.col    # Same column as target square
                 self.squares[captured_pawn_row][captured_pawn_col].piece = None
                 if not testing:
-                    sound_path = os.path.join('..', 'assets', 'sounds', 'capture.wav')
-                    if not os.path.exists(sound_path):
-                        sound_path = os.path.join('assets', 'sounds', 'capture.wav')
+                    sound_path = join('..', 'assets', 'sounds', 'capture.wav')
+                    if not exists(sound_path):
+                        sound_path = join('assets', 'sounds', 'capture.wav')
                     sound = Sound(sound_path)
                     sound.play()
             
@@ -189,8 +189,9 @@ class Board:
         pass
 
     def in_check(self, piece, move):
-        temp_piece = copy.deepcopy(piece)
-        temp_board = copy.deepcopy(self)
+        # Use shallow copy where possible for better performance
+        temp_piece = deepcopy(piece)
+        temp_board = deepcopy(self)
         temp_board.move(temp_piece, move, testing=True)
         
         # Find the king position after the move
@@ -254,26 +255,35 @@ class Board:
             return False
             
         # Check if any move can get out of check
+        return not self._has_legal_move(color)
+    
+    def _has_legal_move(self, color):
+        """Check if the given color has any legal moves"""
         for row in range(ROWS):
             for col in range(COLS):
                 piece = self.squares[row][col].piece
                 if piece and piece.color == color:
                     self.calc_moves(piece, row, col, bool=True)
-                    for move in piece.moves:
-                        # Test if this move gets out of check
-                        temp_board = copy.deepcopy(self)
-                        temp_piece = temp_board.squares[row][col].piece
-                        temp_board.move(temp_piece, move, testing=True)
-                        if not temp_board.is_king_in_check(color):
-                            return False
-        return True
+                    if self._can_escape_check(piece, row, col, color):
+                        return True
+        return False
+    
+    def _can_escape_check(self, piece, row, col, color):
+        """Check if any move by this piece can escape check"""
+        for move in piece.moves:
+            temp_board = copy.deepcopy(self)
+            temp_piece = temp_board.squares[row][col].piece
+            temp_board.move(temp_piece, move, testing=True)
+            if not temp_board.is_king_in_check(color):
+                return True
+        return False
         
     def is_stalemate(self, color):
         # King not in check
         if self.is_king_in_check(color):
             return False
             
-        # Check if any legal move exists
+        # Check if any piece has legal moves
         for row in range(ROWS):
             for col in range(COLS):
                 piece = self.squares[row][col].piece
@@ -502,74 +512,96 @@ class Board:
     
     def to_fen(self, next_player):
         try:
-            fen = ""
-            empty_count = 0
-            for row in range(ROWS):
-                for col in range(COLS):
-                    square = self.squares[row][col]
-                    if square.isempty():
-                        empty_count += 1
-                    else:
-                        if empty_count > 0:
-                            fen += str(empty_count)
-                            empty_count = 0
-                        piece = square.piece
-                        if piece is None:
-                            # This should not happen, but handle it gracefully
-                            print(f"Warning: Found None piece at ({row},{col}) in non-empty square")
-                            empty_count += 1
-                            continue
-                        if not hasattr(piece, 'symbol') or not hasattr(piece, 'color'):
-                            print(f"Warning: Invalid piece at ({row},{col}): {piece}")
-                            return None
-                        fen_char = piece.symbol()
-                        if not fen_char or fen_char == '?':
-                            print(f"Warning: Invalid piece symbol at ({row},{col}): {piece.name}")
-                            return None
-                        fen += fen_char.upper() if piece.color == 'white' else fen_char.lower()
-                if empty_count > 0:
-                    fen += str(empty_count)
-                if row < ROWS - 1:
-                    fen += '/'
-                empty_count = 0
-            
-            # Active color
-            if next_player not in ['white', 'black']:
-                print(f"Warning: Invalid next_player: {next_player}")
+            board_fen = self._generate_board_fen()
+            if board_fen is None:
                 return None
-            fen += " " + ('w' if next_player == 'white' else 'b') + " "
             
-            # Castling availability
-            castling = ""
-            if self.castling_rights and isinstance(self.castling_rights, dict):
-                if self.castling_rights.get('K'): castling += 'K'
-                if self.castling_rights.get('Q'): castling += 'Q'
-                if self.castling_rights.get('k'): castling += 'k'
-                if self.castling_rights.get('q'): castling += 'q'
-            fen += castling if castling else "-"
-            fen += " "
+            active_color = self._get_active_color_fen(next_player)
+            if active_color is None:
+                return None
             
-            # En passant target
-            if self.en_passant_target and hasattr(self.en_passant_target, 'col') and hasattr(self.en_passant_target, 'row'):
-                if 0 <= self.en_passant_target.col <= 7 and 0 <= self.en_passant_target.row <= 7:
-                    col_char = chr(97 + self.en_passant_target.col)  # a-h
-                    row_num = 8 - self.en_passant_target.row
-                    fen += f"{col_char}{row_num}"
-                else:
-                    fen += "-"
-            else:
-                fen += "-"
-            fen += " "
+            castling_fen = self._get_castling_fen()
+            en_passant_fen = self._get_en_passant_fen()
+            move_counts = self._get_move_counts_fen()
             
-            # Halfmove clock and fullmove number
-            halfmove = self.halfmove_clock if isinstance(self.halfmove_clock, int) and self.halfmove_clock >= 0 else 0
-            fullmove = self.fullmove_number if isinstance(self.fullmove_number, int) and self.fullmove_number >= 1 else 1
-            fen += f"{halfmove} {fullmove}"
-            return fen
+            return f"{board_fen} {active_color} {castling_fen} {en_passant_fen} {move_counts}"
             
         except Exception as e:
             print(f"Error generating FEN: {e}")
             return None
+    
+    def _generate_board_fen(self):
+        """Generate the board position part of FEN notation"""
+        fen = ""
+        empty_count = 0
+        for row in range(ROWS):
+            for col in range(COLS):
+                square = self.squares[row][col]
+                if square.isempty():
+                    empty_count += 1
+                else:
+                    if empty_count > 0:
+                        fen += str(empty_count)
+                        empty_count = 0
+                    piece_char = self._get_piece_fen_char(square.piece, row, col)
+                    if piece_char is None:
+                        return None
+                    fen += piece_char
+            if empty_count > 0:
+                fen += str(empty_count)
+            if row < ROWS - 1:
+                fen += '/'
+            empty_count = 0
+        return fen
+    
+    def _get_piece_fen_char(self, piece, row, col):
+        """Get FEN character for a piece with validation"""
+        if piece is None:
+            print(f"Warning: Found None piece at ({row},{col}) in non-empty square")
+            return None
+        if not hasattr(piece, 'symbol') or not hasattr(piece, 'color'):
+            print(f"Warning: Invalid piece at ({row},{col}): {piece}")
+            return None
+        fen_char = piece.symbol()
+        if not fen_char or fen_char == '?':
+            print(f"Warning: Invalid piece symbol at ({row},{col}): {piece.name}")
+            return None
+        return fen_char.upper() if piece.color == 'white' else fen_char.lower()
+    
+    def _get_active_color_fen(self, next_player):
+        """Get active color part of FEN notation"""
+        if next_player not in ['white', 'black']:
+            print(f"Warning: Invalid next_player: {next_player}")
+            return None
+        return 'w' if next_player == 'white' else 'b'
+    
+    def _get_castling_fen(self):
+        """Get castling rights part of FEN notation"""
+        castling = ""
+        if self.castling_rights and isinstance(self.castling_rights, dict):
+            if self.castling_rights.get('K'): castling += 'K'
+            if self.castling_rights.get('Q'): castling += 'Q'
+            if self.castling_rights.get('k'): castling += 'k'
+            if self.castling_rights.get('q'): castling += 'q'
+        return castling if castling else "-"
+    
+    def _get_en_passant_fen(self):
+        """Get en passant target part of FEN notation"""
+        if (self.en_passant_target and 
+            hasattr(self.en_passant_target, 'col') and 
+            hasattr(self.en_passant_target, 'row') and
+            0 <= self.en_passant_target.col <= 7 and 
+            0 <= self.en_passant_target.row <= 7):
+            col_char = chr(97 + self.en_passant_target.col)
+            row_num = 8 - self.en_passant_target.row
+            return f"{col_char}{row_num}"
+        return "-"
+    
+    def _get_move_counts_fen(self):
+        """Get halfmove clock and fullmove number for FEN notation"""
+        halfmove = self.halfmove_clock if isinstance(self.halfmove_clock, int) and self.halfmove_clock >= 0 else 0
+        fullmove = self.fullmove_number if isinstance(self.fullmove_number, int) and self.fullmove_number >= 1 else 1
+        return f"{halfmove} {fullmove}"
     
     def from_fen(self, fen):
         # Clear the board first

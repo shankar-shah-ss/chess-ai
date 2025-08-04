@@ -1,17 +1,21 @@
 # [file name]: piece.py
 # [file content begin]
-import os
+from os.path import join, exists, normpath, abspath
+from os import sep
 
 class Piece:
+    # Class-level constant for better performance
+    SYMBOLS = {
+        'pawn': 'p',
+        'knight': 'n', 
+        'bishop': 'b',
+        'rook': 'r',
+        'queen': 'q',
+        'king': 'k'
+    }
 
     def symbol(self):
-        if self.name == 'pawn': return 'p'
-        if self.name == 'knight': return 'n'
-        if self.name == 'bishop': return 'b'
-        if self.name == 'rook': return 'r'
-        if self.name == 'queen': return 'q'
-        if self.name == 'king': return 'k'
-        return '?'
+        return self.SYMBOLS.get(self.name, '?')
     
     def __repr__(self):
         return self.symbol().upper() if self.color == 'white' else self.symbol().lower()
@@ -24,17 +28,48 @@ class Piece:
         self.moves = []
         self.moved = False
         self.texture = texture
-        self.set_texture()
         self.texture_rect = texture_rect
+        self._texture_loaded = False
 
     def set_texture(self, size=128):
-        # Try relative path from src directory first
-        texture_path = os.path.join('..', 'assets', 'images', f'imgs-{size}px', f'{self.color}_{self.name}.png')
-        if os.path.exists(texture_path):
-            self.texture = texture_path
-        else:
-            # Fallback to original path
-            self.texture = os.path.join(f'assets/images/imgs-{size}px/{self.color}_{self.name}.png')
+        # Skip if already loaded with same size
+        if self._texture_loaded and hasattr(self, '_last_size') and self._last_size == size:
+            return
+            
+        # Validate inputs to prevent path traversal
+        if not isinstance(size, int) or size <= 0:
+            size = 128
+        
+        self._last_size = size
+        
+        # Sanitize filename components
+        safe_color = self.color.replace('..', '').replace(sep, '')
+        safe_name = self.name.replace('..', '').replace(sep, '')
+        
+        # Define allowed base paths
+        base_paths = [
+            join('..', 'assets', 'images', f'imgs-{size}px'),
+            join('assets', 'images', f'imgs-{size}px')
+        ]
+        
+        filename = f'{safe_color}_{safe_name}.png'
+        
+        for base_path in base_paths:
+            # Normalize and validate path
+            texture_path = normpath(join(base_path, filename))
+            
+            # Ensure path doesn't escape intended directory
+            abs_base = abspath(base_path)
+            abs_texture = abspath(texture_path)
+            
+            if abs_texture.startswith(abs_base) and exists(texture_path):
+                self.texture = texture_path
+                self._texture_loaded = True
+                return
+        
+        # Fallback to safe default
+        self.texture = join('assets', 'images', f'imgs-{size}px', f'{safe_color}_{safe_name}.png')
+        self._texture_loaded = True
 
     def add_move(self, move):
         self.moves.append(move)
