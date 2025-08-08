@@ -4,6 +4,7 @@ from chess import Board, Move, STARTING_FEN
 from os import environ, path, cpu_count
 from os.path import exists, expanduser
 import time
+import json
 from threading import RLock, Lock
 import weakref
 from typing import Optional, Dict, Any
@@ -12,6 +13,15 @@ from logging import basicConfig, getLogger, INFO
 # Configure logging for engine
 basicConfig(level=INFO)
 logger = getLogger(__name__)
+
+# Import opening book system
+try:
+    from opening_book import get_opening_book, cleanup_opening_book
+    from book_downloader import setup_opening_books
+    OPENING_BOOK_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Opening book system not available: {e}")
+    OPENING_BOOK_AVAILABLE = False
 
 class EnginePool:
     """Singleton engine pool for better resource management"""
@@ -40,7 +50,7 @@ class EnginePool:
                 pass
 
 class ChessEngine:
-    def __init__(self, skill_level=10, depth=15):
+    def __init__(self, skill_level=10, depth=15, use_opening_book=True):
         self.skill_level = skill_level
         self.depth = depth
         self.recovery_attempts = 0
@@ -48,6 +58,12 @@ class ChessEngine:
         self._is_healthy = True
         self._last_health_check = 0
         self._cleanup_registered = False
+        
+        # Opening book configuration
+        self.use_opening_book = use_opening_book and OPENING_BOOK_AVAILABLE
+        self.opening_book = None
+        self.move_count = 0  # Track move number for book depth
+        self._book_config = None
         
         # Try to locate Stockfish
         stockfish_path = None
@@ -87,6 +103,51 @@ class ChessEngine:
         EnginePool().register_engine(self)
         self._cleanup_registered = True
         
+        # Initialize opening book
+        if self.use_opening_book:
+            self._initialize_opening_book()
+    
+    def _initialize_opening_book(self):
+        """Initialize the opening book system"""
+        try:
+            # Load opening book configuration
+            config_path = path.join(path.dirname(__file__), 'opening_book_config.json')
+            if exists(config_path):
+                with open(config_path, 'r') as f:
+                    config_data = json.load(f)
+                    self._book_config = config_data.get('opening_book', {})
+            else:
+                # Default configuration
+                self._book_config = {
+                    'enabled': True,
+                    'max_depth': 25,
+                    'min_games_threshold': 5,
+                    'rotation_factor': 0.3,
+                    'variety_bonus': 0.1
+                }
+            
+            # Setup books directory and download if needed
+            books_dir = path.join(path.dirname(__file__), '..', 'books')
+            if not exists(books_dir):
+                logger.info("Setting up opening books for the first time...")
+                setup_success = setup_opening_books(books_dir)
+                if setup_success:
+                    logger.info("✅ Opening books setup completed")
+                else:
+                    logger.warning("⚠️ Opening book setup had issues, but continuing...")
+            
+            # Initialize opening book
+            self.opening_book = get_opening_book(self._book_config)
+            
+            # Log book information
+            book_info = self.opening_book.get_book_info()
+            logger.info(f"📚 Opening book initialized: {book_info}")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize opening book: {e}")
+            self.use_opening_book = False
+            self.opening_book = None
+    
     def _test_engine_health(self, engine):
         """Test if engine is responsive"""
         try:
@@ -113,11 +174,11 @@ class ChessEngine:
             if not engine or not self._test_engine_health(engine):
                 raise Exception("Engine failed health check")
                 
-            # Configure for maximum strength at level 20 (with reasonable limits)
+            # Configure for maximum strength at level 20 (with stability limits)
             if skill_level >= 20:
                 if depth >= 20:
-                    # Cap maximum depth to prevent infinite thinking
-                    max_depth = min(depth, 25)  # Maximum 25 ply depth
+                    # Cap maximum depth to prevent crashes and infinite thinking
+                    max_depth = min(depth, 20)  # Maximum 20 ply depth for stability
                     engine.set_depth(max_depth)
                     print(f"Engine configured for MAXIMUM STRENGTH (level {skill_level}, depth {max_depth})")
                 else:
@@ -149,8 +210,8 @@ class ChessEngine:
                     engine._stockfish.stdin.write(f"setoption name Threads value {cores}\n")
                     engine._stockfish.stdin.flush()
                     
-                    # Increase hash table size for better performance (MB)
-                    hash_size = min(512, cores * 64)  # Scale with cores, max 512MB
+                    # Increase hash table size for better performance (MB) - reduced for stability
+                    hash_size = min(256, cores * 32)  # Scale with cores, max 256MB for stability
                     engine._stockfish.stdin.write(f"setoption name Hash value {hash_size}\n")
                     engine._stockfish.stdin.flush()
                     
@@ -196,8 +257,8 @@ class ChessEngine:
         """Apply depth setting with error recovery"""
         try:
             if self.skill_level >= 20 and depth >= 20:
-                # Cap maximum depth to prevent infinite thinking
-                max_depth = min(depth, 25)  # Maximum 25 ply depth
+                # Cap maximum depth to prevent crashes and infinite thinking
+                max_depth = min(depth, 20)  # Maximum 20 ply depth for stability
                 self.engine.set_depth(max_depth)
                 print(f"Engine set to MAXIMUM DEPTH (depth {max_depth}, requested {depth})")
             else:
@@ -207,7 +268,7 @@ class ChessEngine:
             if self._recover_engine() and self.engine:
                 try:
                     if self.skill_level >= 20 and depth >= 20:
-                        max_depth = min(depth, 25)
+                        max_depth = min(depth, 20)  # Maximum 20 ply depth for stability
                         self.engine.set_depth(max_depth)
                         print(f"Engine set to MAXIMUM DEPTH (depth {max_depth}) after recovery")
                     else:
@@ -260,25 +321,56 @@ class ChessEngine:
                         print(f"Failed to set position after recovery: {e2}")
                         return False
                 return False
+    
+    def increment_move_count(self):
+        """Increment move count for opening book tracking"""
+        self.move_count += 1
+    
+    def reset_move_count(self):
+        """Reset move count (e.g., for new game)"""
+        self.move_count = 0
         
     def get_best_move(self, time_limit=None):
-        """Get best move with optional time limit"""
+        """Get best move with optional time limit, checking opening book first"""
         with self.engine_lock:
             if not self.engine or not self._check_engine_health():
                 return None
+            
+            # Check opening book first
+            if self.use_opening_book and self.opening_book:
+                try:
+                    current_fen = self.board.fen() if hasattr(self, 'board') and self.board else self.last_fen
+                    book_move = self.opening_book.get_book_move(current_fen, self.move_count + 1)
+                    
+                    if book_move:
+                        # Validate book move is legal
+                        try:
+                            test_board = Board(current_fen)
+                            chess_move = test_board.parse_uci(book_move)
+                            if chess_move in test_board.legal_moves:
+                                logger.info(f"📖 Book move: {book_move} (move #{self.move_count + 1})")
+                                return book_move
+                            else:
+                                logger.warning(f"Invalid book move: {book_move}")
+                        except Exception as e:
+                            logger.warning(f"Error validating book move {book_move}: {e}")
+                except Exception as e:
+                    logger.error(f"Error getting book move: {e}")
+            
             try:
-                # Set time limit based on depth/level - reduced for stability
+                # Set time limit based on depth/level - conservative for stability
                 if time_limit is None:
                     if self.skill_level >= 20 and self.depth >= 20:
-                        time_limit = 8000   # 8 seconds for maximum strength (reduced from 10)
+                        time_limit = 5000   # 5 seconds for maximum strength (reduced for stability)
                     elif self.skill_level >= 18 or self.depth >= 18:
-                        time_limit = 6000   # 6 seconds for very high strength
+                        time_limit = 4000   # 4 seconds for very high strength
                     elif self.skill_level >= 15 or self.depth >= 15:
-                        time_limit = 4000   # 4 seconds for high strength
+                        time_limit = 3000   # 3 seconds for high strength
                     else:
                         time_limit = 2000   # 2 seconds for normal play
                 
                 # Use time-limited move calculation
+                logger.debug(f"🤖 Engine calculation (move #{self.move_count + 1})")
                 move = self.engine.get_best_move_time(time_limit)
                 if move is None:
                     print(f"Engine returned None for best move (time limit: {time_limit}ms)")
@@ -371,14 +463,21 @@ class ChessEngine:
                 self._recover_engine()
                 
     def _recover_engine(self):
-        """Recover from engine crashes by recreating the instance"""
+        """Recover from engine crashes by recreating the instance with preserved settings"""
         self.recovery_attempts += 1
         if self.recovery_attempts > self.max_recovery_attempts:
             print(f"Max recovery attempts ({self.max_recovery_attempts}) reached. Engine unhealthy.")
             self._is_healthy = False
             return False
             
-        print(f"Recovering crashed engine... (attempt {self.recovery_attempts})")
+        print(f"🔄 Recovering crashed engine... (attempt {self.recovery_attempts})")
+        print(f"   Preserving settings: skill_level={self.skill_level}, depth={self.depth}")
+        
+        # Store current settings before cleanup
+        preserved_skill_level = self.skill_level
+        preserved_depth = self.depth
+        preserved_fen = self.last_fen
+        
         try:
             # Clean up old engine
             if hasattr(self.engine, '_stockfish'):
@@ -390,25 +489,31 @@ class ChessEngine:
             pass
         
         try:
-            # Create new engine instance with stored values
-            self.engine = self._create_engine(self.skill_level, self.depth)
+            # Create new engine instance with preserved settings
+            self.engine = self._create_engine(preserved_skill_level, preserved_depth)
             
             # Restore last known position
-            if self.last_fen:
-                self.engine.set_fen_position(self.last_fen)
-                self.board = Board(self.last_fen)
+            if preserved_fen:
+                self.engine.set_fen_position(preserved_fen)
+                self.board = Board(preserved_fen)
+                self.last_fen = preserved_fen
             else:
                 # Fallback to starting position
                 self.engine.set_fen_position(STARTING_FEN)
                 self.board = Board()
                 self.last_fen = STARTING_FEN
                 
+            # Ensure settings are properly restored
+            self.skill_level = preserved_skill_level
+            self.depth = preserved_depth
+            
             # Reset recovery counter on success
             self.recovery_attempts = 0
             self._is_healthy = True
+            print(f"✅ Engine recovered successfully with skill_level={self.skill_level}, depth={self.depth}")
             return True
         except (AttributeError, ValueError, RuntimeError) as e:
-            print(f"Engine recovery failed: {e}")
+            print(f"❌ Engine recovery failed: {e}")
             if self.recovery_attempts >= self.max_recovery_attempts:
                 self._is_healthy = False
             return False
@@ -428,6 +533,15 @@ class ChessEngine:
                             except (AttributeError, OSError):
                                 pass
                     self.engine = None
+                
+                # Cleanup opening book (only if this is the last engine instance)
+                if hasattr(self, 'opening_book') and self.opening_book:
+                    try:
+                        # Note: We don't cleanup the global book here as other engines might use it
+                        self.opening_book = None
+                    except Exception as e:
+                        logger.error(f"Error cleaning up opening book: {e}")
+                
                 logger.info("Engine cleanup completed")
             except (AttributeError, OSError) as e:
                 logger.error(f"Error during engine cleanup: {e}")

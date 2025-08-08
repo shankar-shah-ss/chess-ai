@@ -271,7 +271,7 @@ class Board:
     def _can_escape_check(self, piece, row, col, color):
         """Check if any move by this piece can escape check"""
         for move in piece.moves:
-            temp_board = copy.deepcopy(self)
+            temp_board = deepcopy(self)
             temp_piece = temp_board.squares[row][col].piece
             temp_board.move(temp_piece, move, testing=True)
             if not temp_board.is_king_in_check(color):
@@ -512,6 +512,11 @@ class Board:
     
     def to_fen(self, next_player):
         try:
+            # Validate board state before generating FEN
+            if not self._validate_board_state():
+                print("Warning: Board state validation failed before FEN generation")
+                return None
+                
             board_fen = self._generate_board_fen()
             if board_fen is None:
                 return None
@@ -529,6 +534,36 @@ class Board:
         except Exception as e:
             print(f"Error generating FEN: {e}")
             return None
+    
+    def _validate_board_state(self):
+        """Validate basic board state consistency"""
+        try:
+            # Check for exactly one king of each color
+            white_kings = 0
+            black_kings = 0
+            
+            for row in range(ROWS):
+                for col in range(COLS):
+                    square = self.squares[row][col]
+                    if square.has_piece():
+                        piece = square.piece
+                        if piece.name.lower() == 'king':
+                            if piece.color == 'white':
+                                white_kings += 1
+                            else:
+                                black_kings += 1
+            
+            if white_kings != 1:
+                print(f"Invalid board state: {white_kings} white kings found")
+                return False
+            if black_kings != 1:
+                print(f"Invalid board state: {black_kings} black kings found")
+                return False
+                
+            return True
+        except Exception as e:
+            print(f"Error validating board state: {e}")
+            return False
     
     def _generate_board_fen(self):
         """Generate the board position part of FEN notation"""

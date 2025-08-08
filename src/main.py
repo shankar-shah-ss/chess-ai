@@ -1,6 +1,7 @@
 # main.py
 import pygame
 from sys import exit
+import sys
 import os
 
 from const import *

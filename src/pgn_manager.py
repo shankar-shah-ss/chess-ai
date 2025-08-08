@@ -134,6 +134,17 @@ class PGNManager:
                 is_checkmate=False, is_castling=False, promotion_piece=None, 
                 is_en_passant=False, board_state=None):
         """Add a move to the PGN record with full disambiguation support"""
+        # Validate inputs
+        if not move or not piece:
+            print(f"⚠️  Invalid move data: move={move}, piece={piece}")
+            return
+        
+        # Validate piece name
+        valid_pieces = ['pawn', 'knight', 'bishop', 'rook', 'queen', 'king']
+        if piece.name not in valid_pieces:
+            print(f"⚠️  Invalid piece name: {piece.name}")
+            return
+        
         # Store board state for disambiguation
         if board_state:
             self.board_state = board_state
@@ -143,6 +154,11 @@ class PGNManager:
             move, piece, captured_piece, is_check, is_checkmate, 
             is_castling, promotion_piece, is_en_passant
         )
+        
+        # Validate generated notation
+        if not notation or len(notation) < 2:
+            print(f"⚠️  Invalid notation generated: '{notation}' for piece {piece.name}")
+            return
         
         # Handle captured_piece - it might be a piece object, boolean, or None
         captured_name = None
@@ -242,48 +258,247 @@ class PGNManager:
         return notation
     
     def _get_disambiguation(self, move, piece) -> str:
-        """Get disambiguation string for pieces when multiple pieces can reach same square"""
+        """
+        Get disambiguation string according to official PGN/SAN specification:
+        
+        From PGN specification section 8.2.3.1:
+        "If the move is ambiguous, the moving piece is uniquely identified by 
+        specifying the file of departure if they differ; otherwise, the rank 
+        of departure if they differ; otherwise, both the file and rank are specified."
+        """
         if not self.board_state:
             return ""
         
-        disambiguation = ""
+        # Only pieces (not pawns) need disambiguation for regular moves
+        # Pawns use file disambiguation only for captures
+        if piece.name == 'pawn':
+            return ""
+        
         col_map = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
         from_file = col_map[move.initial.col]
         from_rank = str(8 - move.initial.row)
+        target_row, target_col = move.final.row, move.final.col
         
-        # Find all pieces of the same type and color that can move to the same square
-        same_pieces = []
+        # Find all other pieces of the same type and color that can legally move to the same square
+        ambiguous_pieces = []
+        
         for row in range(8):
             for col in range(8):
+                # Skip the moving piece itself
+                if row == move.initial.row and col == move.initial.col:
+                    continue
+                    
                 square = self.board_state.squares[row][col]
                 if (square.has_piece() and 
                     square.piece.name == piece.name and 
-                    square.piece.color == piece.color and
-                    (row != move.initial.row or col != move.initial.col)):
+                    square.piece.color == piece.color):
                     
-                    # Check if this piece can also move to the target square
-                    # This is a simplified check - in a full implementation,
-                    # we'd need to verify legal moves
-                    same_pieces.append((row, col))
+                    # Check if this piece can legally move to the target square
+                    if self._can_piece_reach_square(square.piece, row, col, target_row, target_col):
+                        ambiguous_pieces.append((row, col))
         
-        if not same_pieces:
+        # No ambiguity - no disambiguation needed
+        if not ambiguous_pieces:
             return ""
         
-        # Check if disambiguation by file is sufficient
-        files_conflict = any(col == move.initial.col for row, col in same_pieces)
-        ranks_conflict = any(row == move.initial.row for row, col in same_pieces)
+        # Apply official PGN disambiguation rules:
+        # 1. Try file disambiguation first
+        files_differ = True
+        for amb_row, amb_col in ambiguous_pieces:
+            if amb_col == move.initial.col:  # Same file as moving piece
+                files_differ = False
+                break
         
-        if not files_conflict:
-            # File disambiguation is sufficient
-            disambiguation = from_file
-        elif not ranks_conflict:
-            # Rank disambiguation is sufficient
-            disambiguation = from_rank
-        else:
-            # Need both file and rank
-            disambiguation = from_file + from_rank
+        if files_differ:
+            return from_file
         
-        return disambiguation
+        # 2. If files are the same, try rank disambiguation
+        ranks_differ = True
+        for amb_row, amb_col in ambiguous_pieces:
+            if amb_row == move.initial.row:  # Same rank as moving piece
+                ranks_differ = False
+                break
+        
+        if ranks_differ:
+            return from_rank
+        
+        # 3. If both file and rank are needed (rare case)
+        return from_file + from_rank
+    
+    def _can_piece_reach_square(self, piece, from_row, from_col, to_row, to_col) -> bool:
+        """
+        Check if a piece can legally reach a target square, including path blocking checks.
+        This is used for proper disambiguation in PGN notation.
+        """
+        if not piece or from_row == to_row and from_col == to_col:
+            return False
+        
+        row_diff = to_row - from_row
+        col_diff = to_col - from_col
+        abs_row_diff = abs(row_diff)
+        abs_col_diff = abs(col_diff)
+        
+        # First check if the move pattern is valid for the piece type
+        valid_pattern = False
+        
+        if piece.name == 'knight':
+            # Knight moves in L-shape: exactly 2+1 or 1+2
+            valid_pattern = (abs_row_diff == 2 and abs_col_diff == 1) or (abs_row_diff == 1 and abs_col_diff == 2)
+        
+        elif piece.name == 'bishop':
+            # Bishop moves diagonally: row and column differences must be equal
+            valid_pattern = abs_row_diff == abs_col_diff and abs_row_diff > 0
+        
+        elif piece.name == 'rook':
+            # Rook moves horizontally or vertically: one difference must be 0
+            valid_pattern = (abs_row_diff == 0 and abs_col_diff > 0) or (abs_col_diff == 0 and abs_row_diff > 0)
+        
+        elif piece.name == 'queen':
+            # Queen combines rook and bishop moves
+            valid_pattern = (abs_row_diff == abs_col_diff and abs_row_diff > 0) or \
+                           (abs_row_diff == 0 and abs_col_diff > 0) or \
+                           (abs_col_diff == 0 and abs_row_diff > 0)
+        
+        elif piece.name == 'king':
+            # King moves exactly one square in any direction
+            valid_pattern = abs_row_diff <= 1 and abs_col_diff <= 1 and (abs_row_diff > 0 or abs_col_diff > 0)
+        
+        elif piece.name == 'pawn':
+            # For disambiguation purposes, we generally don't disambiguate pawn moves
+            # except for captures (handled separately in the main notation generation)
+            return False
+        
+        if not valid_pattern:
+            return False
+        
+        # For knights and kings, no path blocking check needed
+        if piece.name in ['knight', 'king']:
+            return True
+        
+        # For sliding pieces (bishop, rook, queen), check if path is clear
+        return self._is_path_clear(from_row, from_col, to_row, to_col)
+    
+    def _is_path_clear(self, from_row, from_col, to_row, to_col) -> bool:
+        """Check if the path between two squares is clear of pieces"""
+        if not self.board_state:
+            return True  # Can't check without board state
+        
+        row_diff = to_row - from_row
+        col_diff = to_col - from_col
+        
+        # Determine step direction
+        row_step = 0 if row_diff == 0 else (1 if row_diff > 0 else -1)
+        col_step = 0 if col_diff == 0 else (1 if col_diff > 0 else -1)
+        
+        # Check each square along the path (excluding start and end squares)
+        current_row = from_row + row_step
+        current_col = from_col + col_step
+        
+        while current_row != to_row or current_col != to_col:
+            if (0 <= current_row < 8 and 0 <= current_col < 8 and 
+                self.board_state.squares[current_row][current_col].has_piece()):
+                return False  # Path is blocked
+            
+            current_row += row_step
+            current_col += col_step
+        
+        return True  # Path is clear
+    
+    def _validate_pgn_notation(self, notation: str) -> bool:
+        """
+        Validate PGN notation according to official Standard Algebraic Notation (SAN) rules.
+        
+        Based on PGN specification section 8.2.3 (Standard Algebraic Notation).
+        """
+        if not notation:
+            return False
+        
+        import re
+        
+        # Remove check/checkmate/annotation symbols for core validation
+        clean_notation = notation.replace('+', '').replace('#', '').replace(' e.p.', '').strip()
+        
+        if not clean_notation:
+            return False
+        
+        # 1. Castling moves
+        if clean_notation in ['O-O', 'O-O-O']:
+            return True
+        
+        # 2. Pawn moves
+        # Format: [file][rank] or [file]x[file][rank] or [file][rank]=[piece] or [file]x[file][rank]=[piece]
+        pawn_patterns = [
+            r'^[a-h][1-8]$',                    # Simple pawn move: e4
+            r'^[a-h]x[a-h][1-8]$',             # Pawn capture: exd5
+            r'^[a-h][18]=[NBRQ]$',             # Pawn promotion: e8=Q
+            r'^[a-h]x[a-h][18]=[NBRQ]$'       # Pawn capture with promotion: exd8=Q
+        ]
+        
+        for pattern in pawn_patterns:
+            if re.match(pattern, clean_notation):
+                return True
+        
+        # 3. Piece moves - be very explicit about valid patterns
+        
+        # First check for obviously invalid patterns
+        if re.match(r'^[NBRQK][a-h][1-8][a-h][1-8]$', clean_notation) and 'x' not in clean_notation:
+            # This is "Ne4e5" format - invalid unless it's proper disambiguation
+            # Check if it could be valid full square disambiguation
+            piece = clean_notation[0]
+            from_square = clean_notation[1:3]
+            to_square = clean_notation[3:5]
+            # Only valid if from_square != to_square
+            if from_square == to_square:
+                return False
+            # For now, accept it as valid full square disambiguation
+            # In a real implementation, we'd check if disambiguation is actually needed
+            return True
+        
+        # Valid piece move patterns
+        piece_patterns = [
+            r'^[NBRQK][a-h][1-8]x[a-h][1-8]$',   # Full square disambiguation + capture
+            r'^[NBRQK][a-h]x[a-h][1-8]$',        # File disambiguation + capture
+            r'^[NBRQK][1-8]x[a-h][1-8]$',        # Rank disambiguation + capture
+            r'^[NBRQK][a-h][a-h][1-8]$',         # File disambiguation
+            r'^[NBRQK][1-8][a-h][1-8]$',         # Rank disambiguation
+            r'^[NBRQK]x[a-h][1-8]$',             # Capture without disambiguation
+            r'^[NBRQK][a-h][1-8]$'               # Simple piece move
+        ]
+        
+        for pattern in piece_patterns:
+            if re.match(pattern, clean_notation):
+                return True
+        
+        return False
+    
+    def validate_game_pgn(self) -> Tuple[bool, List[str]]:
+        """Validate the entire game PGN and return issues found"""
+        issues = []
+        
+        if not self.moves:
+            issues.append("No moves recorded")
+            return False, issues
+        
+        # Check each move notation
+        for i, move in enumerate(self.moves):
+            notation = move.get('notation', '')
+            if not self._validate_pgn_notation(notation):
+                issues.append(f"Move {i+1}: Invalid notation '{notation}'")
+        
+        # Check for proper alternating colors
+        expected_color = 'white'
+        for i, move in enumerate(self.moves):
+            if move.get('color') != expected_color:
+                issues.append(f"Move {i+1}: Expected {expected_color}, got {move.get('color')}")
+            expected_color = 'black' if expected_color == 'white' else 'white'
+        
+        # Check ply count
+        expected_ply_count = len(self.moves)
+        actual_ply_count = int(self.headers.get('PlyCount', '0'))
+        if expected_ply_count != actual_ply_count:
+            issues.append(f"Ply count mismatch: expected {expected_ply_count}, got {actual_ply_count}")
+        
+        return len(issues) == 0, issues
     
     def add_comment(self, move_index: int, comment: str):
         """Add a comment to a specific move"""
@@ -536,6 +751,14 @@ class PGNManager:
                     filepath = f"{name_part}_{counter}.pgn"
                     counter += 1
                 
+                # Validate PGN before saving
+                is_valid, issues = self.validate_game_pgn()
+                if not is_valid:
+                    print(f"⚠️  PGN validation failed:")
+                    for issue in issues:
+                        print(f"   - {issue}")
+                    print("   Saving anyway, but PGN may be invalid...")
+                
                 # Write PGN file
                 with open(filepath, 'w', encoding='utf-8') as f:
                     f.write(self.generate_pgn())
@@ -631,6 +854,14 @@ class PGNManager:
                     print("Overwrite cancelled")
                     return False
             
+            # Validate PGN before saving
+            is_valid, issues = self.validate_game_pgn()
+            if not is_valid:
+                print(f"⚠️  PGN validation failed:")
+                for issue in issues:
+                    print(f"   - {issue}")
+                print("   Saving anyway, but PGN may be invalid...")
+            
             # Write PGN file
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(self.generate_pgn())
@@ -696,6 +927,14 @@ class PGNManager:
                 if overwrite not in ['y', 'yes']:
                     print("Save cancelled")
                     return False
+            
+            # Validate PGN before saving
+            is_valid, issues = self.validate_game_pgn()
+            if not is_valid:
+                print(f"⚠️  PGN validation failed:")
+                for issue in issues:
+                    print(f"   - {issue}")
+                print("   Saving anyway, but PGN may be invalid...")
             
             # Write PGN file
             with open(filepath, 'w', encoding='utf-8') as f:

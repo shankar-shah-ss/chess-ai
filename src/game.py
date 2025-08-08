@@ -217,24 +217,25 @@ class Game:
         self.engine_white = False
         self.engine_black = False
         
+        # Set default engine settings first
+        self.depth = 15
+        self.level = 10
+        
         # Create separate engines for white and black with multi-core optimization
         self.engine_creation_lock = Lock()
         import os
         cpu_count = os.cpu_count() or 4
         try:
-            # Initialize engines with optimized settings
-            self.engine_white_instance = ChessEngine()
-            self.engine_black_instance = ChessEngine()
+            # Initialize engines with current game settings
+            self.engine_white_instance = ChessEngine(skill_level=self.level, depth=self.depth)
+            self.engine_black_instance = ChessEngine(skill_level=self.level, depth=self.depth)
             self.engine = self.engine_white_instance  # Default for compatibility
-            print(f"✓ Chess engines initialized for {cpu_count} CPU cores")
+            print(f"✓ Chess engines initialized for {cpu_count} CPU cores (skill={self.level}, depth={self.depth})")
         except Exception as e:
             print(f"✗ Failed to initialize chess engines: {e}")
             self.engine_white_instance = None
             self.engine_black_instance = None
             self.engine = None
-        
-        self.depth = 15
-        self.level = 10
         self.game_mode = 0
         self.current_engine_depth = None  # Track current engine depth
         self.current_engine_level = None  # Track current engine level
@@ -292,9 +293,45 @@ class Game:
         """Get the correct engine instance for the given player"""
         with self.engine_creation_lock:
             if player == 'white':
-                return self.engine_white_instance if self.engine_white_instance and self.engine_white_instance._is_healthy else None
+                # Check if engine needs recreation
+                if not self.engine_white_instance or not self.engine_white_instance._is_healthy:
+                    self._recreate_engine('white')
+                return self.engine_white_instance
             else:
-                return self.engine_black_instance if self.engine_black_instance and self.engine_black_instance._is_healthy else None
+                # Check if engine needs recreation
+                if not self.engine_black_instance or not self.engine_black_instance._is_healthy:
+                    self._recreate_engine('black')
+                return self.engine_black_instance
+    
+    def _recreate_engine(self, color):
+        """Recreate engine with preserved settings"""
+        try:
+            print(f"🔄 Recreating {color} engine with preserved settings (skill={self.level}, depth={self.depth})")
+            
+            # Clean up old engine
+            if color == 'white' and self.engine_white_instance:
+                self.engine_white_instance.cleanup()
+            elif color == 'black' and self.engine_black_instance:
+                self.engine_black_instance.cleanup()
+            
+            # Create new engine with current settings
+            new_engine = ChessEngine(skill_level=self.level, depth=self.depth)
+            
+            if color == 'white':
+                self.engine_white_instance = new_engine
+                if hasattr(self, 'engine') and self.engine == self.engine_white_instance:  # Update default reference
+                    self.engine = new_engine
+            else:
+                self.engine_black_instance = new_engine
+                
+            print(f"✅ {color.capitalize()} engine recreated successfully")
+            
+        except Exception as e:
+            print(f"❌ Failed to recreate {color} engine: {e}")
+            if color == 'white':
+                self.engine_white_instance = None
+            else:
+                self.engine_black_instance = None
 
     # Board rendering methods
     def show_bg(self, surface):
@@ -688,6 +725,15 @@ class Game:
         # Use threaded methods to restore engine settings
         self.set_engine_level(current_level)
         self.set_engine_depth(current_depth)
+        
+        # Reset opening book move counters
+        try:
+            if hasattr(self, 'engine_white_instance') and self.engine_white_instance:
+                self.engine_white_instance.reset_move_count()
+            if hasattr(self, 'engine_black_instance') and self.engine_black_instance:
+                self.engine_black_instance.reset_move_count()
+        except Exception as e:
+            print(f"Error resetting move counts: {e}")
         
 
 
@@ -1167,11 +1213,25 @@ class Game:
             
             # Make the actual move
             self.board.move(piece, move)
+            
+            # Increment move count for opening book tracking
+            try:
+                current_player = 'white' if self.next_player == 'white' else 'black'
+                if current_player == 'white' and hasattr(self, 'engine_white_instance') and self.engine_white_instance:
+                    self.engine_white_instance.increment_move_count()
+                elif current_player == 'black' and hasattr(self, 'engine_black_instance') and self.engine_black_instance:
+                    self.engine_black_instance.increment_move_count()
+            except Exception as e:
+                print(f"Error incrementing move count: {e}")
+            
+            # Switch turns immediately after the move (within the lock)
+            # This prevents race conditions where FEN is generated before turn switch
+            self.next_turn()
         
         # Check for check/checkmate after move
-        opponent_color = 'black' if piece.color == 'white' else 'white'
-        is_check = self.board.is_king_in_check(opponent_color)
-        is_checkmate = self.board.is_checkmate(opponent_color) if is_check else False
+        # Since we already switched turns, self.next_player is now the opponent
+        is_check = self.board.is_king_in_check(self.next_player)
+        is_checkmate = self.board.is_checkmate(self.next_player) if is_check else False
         
         # Get evaluation after move (if available)
         eval_after = None
@@ -1199,7 +1259,6 @@ class Game:
         self.draw_offer_by = None
         
         self.play_sound(captured)
-        self.next_turn()
         self.check_game_state()
     
     def _update_draw_manager(self, piece, move, captured, is_check):
@@ -1291,12 +1350,33 @@ class Game:
 
     
     def _validate_fen(self, fen):
-        """Validate FEN string"""
+        """Validate FEN string with detailed error reporting"""
         try:
             import chess
             board = chess.Board(fen)
-            return board.is_valid()
-        except:
+            if board.is_valid():
+                return True
+            else:
+                # Provide detailed error information
+                status = board.status()
+                error_details = []
+                if status & chess.STATUS_NO_WHITE_KING:
+                    error_details.append("No white king")
+                if status & chess.STATUS_NO_BLACK_KING:
+                    error_details.append("No black king")
+                if status & chess.STATUS_TOO_MANY_KINGS:
+                    error_details.append("Too many kings")
+                if status & chess.STATUS_OPPOSITE_CHECK:
+                    error_details.append("Non-active player is in check")
+                if status & chess.STATUS_BAD_CASTLING_RIGHTS:
+                    error_details.append("Invalid castling rights")
+                if status & chess.STATUS_INVALID_EP_SQUARE:
+                    error_details.append("Invalid en passant square")
+                
+                print(f"🚫 FEN validation failed: {', '.join(error_details) if error_details else 'Unknown error'}")
+                return False
+        except Exception as e:
+            print(f"🚫 FEN validation exception: {e}")
             return False
     
     def _debug_board_state(self):

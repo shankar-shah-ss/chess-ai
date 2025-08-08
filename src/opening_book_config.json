@@ -1,0 +1,28 @@
+{
+    "opening_book": {
+        "enabled": true,
+        "max_depth": 25,
+        "min_games_threshold": 5,
+        "rotation_factor": 0.3,
+        "variety_bonus": 0.1,
+        "polyglot_path": "books/book.bin",
+        "pgn_db_path": "books/openings.db",
+        "auto_download_books": true,
+        "book_sources": {
+            "essential_openings": true,
+            "polyglot_book": true,
+            "pgn_database": true
+        },
+        "move_selection": {
+            "strategy": "weighted_rotation",
+            "top_moves_consider": 3,
+            "freshness_threshold_hours": 1,
+            "history_length": 20
+        },
+        "performance": {
+            "cache_size": 1000,
+            "lazy_loading": true,
+            "background_updates": true
+        }
+    }
+}
