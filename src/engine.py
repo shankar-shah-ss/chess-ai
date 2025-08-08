@@ -358,28 +358,28 @@ class ChessEngine:
                     logger.error(f"Error getting book move: {e}")
             
             try:
-                # Set time limit based on depth/level - conservative for stability
+                # Set time limit based on depth/level - increased by 3x for better move quality
                 if time_limit is None:
                     if self.skill_level >= 20 and self.depth >= 20:
-                        time_limit = 5000   # 5 seconds for maximum strength (reduced for stability)
+                        time_limit = 15000  # 15 seconds for maximum strength (3x increase)
                     elif self.skill_level >= 18 or self.depth >= 18:
-                        time_limit = 4000   # 4 seconds for very high strength
+                        time_limit = 12000  # 12 seconds for very high strength (3x increase)
                     elif self.skill_level >= 15 or self.depth >= 15:
-                        time_limit = 3000   # 3 seconds for high strength
+                        time_limit = 9000   # 9 seconds for high strength (3x increase)
                     else:
-                        time_limit = 2000   # 2 seconds for normal play
+                        time_limit = 6000   # 6 seconds for normal play (3x increase)
                 
                 # Use time-limited move calculation
                 logger.debug(f"🤖 Engine calculation (move #{self.move_count + 1})")
                 move = self.engine.get_best_move_time(time_limit)
                 if move is None:
                     print(f"Engine returned None for best move (time limit: {time_limit}ms)")
-                    # Aggressive fallback with multiple attempts
+                    # Aggressive fallback with multiple attempts (3x increased timeouts)
                     fallback_attempts = [
-                        (8, 3000),   # Depth 8, 3 seconds
-                        (6, 2000),   # Depth 6, 2 seconds  
-                        (4, 1000),   # Depth 4, 1 second
-                        (2, 500),    # Depth 2, 0.5 seconds
+                        (8, 9000),   # Depth 8, 9 seconds (3x increase)
+                        (6, 6000),   # Depth 6, 6 seconds (3x increase)
+                        (4, 3000),   # Depth 4, 3 seconds (3x increase)
+                        (2, 1500),   # Depth 2, 1.5 seconds (3x increase)
                     ]
                     
                     original_depth = self.depth
@@ -405,8 +405,8 @@ class ChessEngine:
                 print(f"Error getting best move: {e}")
                 if self._recover_engine() and self.engine:
                     try:
-                        # Use shorter time limit for recovery
-                        return self.engine.get_best_move_time(min(time_limit or 2000, 2000))
+                        # Use shorter time limit for recovery (3x increased)
+                        return self.engine.get_best_move_time(min(time_limit or 6000, 6000))
                     except (AttributeError, ValueError, RuntimeError) as e2:
                         print(f"Failed to get best move after recovery: {e2}")
                         return None
