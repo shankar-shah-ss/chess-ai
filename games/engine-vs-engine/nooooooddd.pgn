@@ -1,0 +1,27 @@
+[Event "Engine vs Engine"]
+[Site "Chess AI"]
+[Date "2025.08.10"]
+[Round "1"]
+[White "Engine (World Class/Engine Max)"]
+[Black "Engine (Club Player)"]
+[Result "1-0"]
+[WhiteElo "3200"]
+[BlackElo "2000"]
+[TimeControl "-"]
+[PlyCount "77"]
+[EventDate "2025.08.10"]
+[Time "01:04:40"]
+[UTCTime "01:04:40"]
+[UTCDate "2025.08.10"]
+[Mode "OTB"]
+[Generator "Chess AI v2.0"]
+[Termination "Checkmate"]
+
+1. e4 d6 2. d4 Nf6 3. Bd3 a6 4. e5 dxe5 5. dxe5 Nfd7 6. Nf3 Nc5 7. Be3 Nxd3+ 8.
+cxd3 e6 9. O-O Qd7 10. Ng5 h6 11. Nh3 Nc6 12. d4 b6 13. Qe2 Bb7 14. Rd1 O-O-O
+15. Nc3 Rg8 16. Nf4 Ne7 17. Rac1 Qe8 18. a4 Kb8 19. a5 bxa5 20. f3 Nf5 21. Bf2
+h5 22. Qc2 Rc8 23. d5 Rh8 24. Na4 Qb5 25. dxe6 Nh6 26. Rd8 c6 27. Rxc8+ Bxc8 28.
+Ne2 c5 29. Nd4 Qb7 30. Nxc5 Bxc5 31. Qxc5 Nf5 32. Nc6+ Ka8 33. Nxa5 Qb8 34. Nc6
+Qb7 35. exf7 Qxf7 36. Na5 Qd7 37. e6 Qb7 38. Nxb7 Bd7 39. Qa7#
+
+1-0

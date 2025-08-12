@@ -1,11 +1,31 @@
 {
   "engine": {
     "stockfish_path": "stockfish",
-    "default_depth": 15,
-    "default_skill_level": 10,
-    "max_depth": 20,
-    "max_skill_level": 20,
-    "timeout_seconds": 30
+    "default_elo": 1500,
+    "min_elo": 800,
+    "max_elo": 3600,
+    "elo_categories": {
+      "Beginner": [800, 1200],
+      "Casual": [1200, 1600],
+      "Club Player": [1600, 2000],
+      "Expert": [2000, 2200],
+      "Master": [2200, 2400],
+      "International Master": [2400, 2500],
+      "Grandmaster": [2500, 2700],
+      "Super GM": [2700, 2800],
+      "World Class/Engine Max": [2800, 3600]
+    },
+    "timeout_seconds": 30,
+    "thermal_management": {
+      "enabled": true,
+      "auto_enable_engine_vs_engine": true,
+      "core_usage_limits": {
+        "beginner": 0.125,
+        "expert": 0.25,
+        "grandmaster": 0.375,
+        "engine_max": 0.375
+      }
+    }
   },
   "ui": {
     "window_width": 900,
@@ -19,7 +39,7 @@
   },
   "analysis": {
     "auto_analyze": false,
-    "analysis_depth": 18,
+    "analysis_elo": 2600,
     "max_analysis_time": 300,
     "show_best_moves": 3,
     "classification_thresholds": {

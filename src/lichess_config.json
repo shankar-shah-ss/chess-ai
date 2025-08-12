@@ -1,0 +1,26 @@
+{
+  "lichess_opening_system": {
+    "max_depth": 30,
+    "min_games": 100,
+    "request_delay": 1.0,
+    "cache_ttl_minutes": 30,
+    "move_selection": "intelligent_random",
+    "variety_enabled": true,
+    "min_games_gap": 10
+  },
+  "move_selection_options": {
+    "best": "Select move with highest win rate and popularity",
+    "popular": "Select most frequently played move",
+    "random": "Weighted random selection based on game frequency",
+    "intelligent_random": "Smart random selection with opening variety management"
+  },
+  "description": {
+    "max_depth": "Maximum opening depth to search (moves)",
+    "min_games": "Minimum games required to consider a move",
+    "request_delay": "Delay between API requests (seconds) - respectful rate limiting",
+    "cache_ttl_minutes": "How long to cache position data (minutes)",
+    "move_selection": "Strategy for selecting moves: best, popular, random, or intelligent_random",
+    "variety_enabled": "Enable intelligent opening variety management",
+    "min_games_gap": "Minimum games before repeating the same opening"
+  }
+}

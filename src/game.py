@@ -17,6 +17,20 @@ from resource_manager import resource_manager
 from pgn_manager import PGNIntegration
 from draw_manager import DrawManager, DrawType, DrawCondition
 
+# Import board synchronizer for better position validation
+try:
+    from board_synchronizer import BoardSynchronizer
+    BOARD_SYNCHRONIZER_AVAILABLE = True
+except ImportError:
+    BOARD_SYNCHRONIZER_AVAILABLE = False
+
+# Import thread-safe board manager
+try:
+    from thread_safe_board_manager import ThreadSafeBoardManager
+    THREAD_SAFE_BOARD_AVAILABLE = True
+except ImportError:
+    THREAD_SAFE_BOARD_AVAILABLE = False
+
 class EngineWorker(Thread):
     def __init__(self, game, fen, move_queue, engine=None):
         super().__init__()
@@ -29,6 +43,7 @@ class EngineWorker(Thread):
                          if hasattr(threading, 'THREAD_PRIORITY_ABOVE_NORMAL')
                          else None)
         self.start_time = None
+        self.max_retries = 3  # Maximum number of retry attempts
 
     def run(self):
         try:
@@ -36,48 +51,324 @@ class EngineWorker(Thread):
             
             # Validate FEN before using
             if not self.fen or len(self.fen.strip()) == 0:
-                print("Invalid FEN provided to engine worker")
+                print("🚨 ENGINE FAILURE: Invalid FEN provided to engine worker")
+                print(f"🔍 FEN value: '{self.fen}'")
+                self._generate_fallback_move()
                 return
                 
-            # Get best move from engine
-            if not self.engine.set_position(self.fen):
-                print("Failed to set position in engine worker")
-                return
+            # Try to get a valid move with retries
+            for attempt in range(self.max_retries + 1):
+                if attempt > 0:
+                    print(f"🔄 Retry attempt {attempt}/{self.max_retries} for move generation")
+                    # Re-synchronize engine position before retry
+                    time.sleep(0.1)  # Brief pause to allow any pending operations
                 
-            # Get best move with appropriate time limit
-            time_limit = None
-            if hasattr(self.game, 'level') and hasattr(self.game, 'depth'):
-                if self.game.level >= 20 and self.game.depth >= 20:
-                    time_limit = 10000  # 10 seconds max for highest settings
-                elif self.game.level >= 15 or self.game.depth >= 15:
-                    time_limit = 5000   # 5 seconds for high settings
-                else:
-                    time_limit = 3000   # 3 seconds for normal settings
-            
-            uci_move = self.engine.get_best_move(time_limit)
-            
-            if uci_move and len(uci_move) >= 4:
-                col_map = {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7}
-                try:
-                    from_col = col_map[uci_move[0]]
-                    from_row = 8 - int(uci_move[1])
-                    to_col = col_map[uci_move[2]]
-                    to_row = 8 - int(uci_move[3])
+                # Ensure engine position is synchronized
+                if not self._synchronize_engine_position():
+                    if attempt == self.max_retries:
+                        print("🚨 ENGINE FAILURE: Failed to synchronize engine position after all retries")
+                        print(f"🔍 Attempted FEN: {self.fen}")
+                        self._generate_fallback_move()
+                        return
+                    continue
                     
-                    # Validate coordinates
-                    if (0 <= from_row < 8 and 0 <= from_col < 8 and 
-                        0 <= to_row < 8 and 0 <= to_col < 8):
-                        initial = Square(from_row, from_col)
-                        final = Square(to_row, to_col)
-                        self.move_queue.put(Move(initial, final))
-                    else:
-                        print(f"Invalid move coordinates: {uci_move}")
-                except (KeyError, ValueError, IndexError) as e:
-                    print(f"Error parsing UCI move {uci_move}: {e}")
-            else:
-                print(f"Invalid UCI move received: {uci_move}")
+                # Get best move from engine
+                uci_move = self.engine.get_best_move()  # Engine handles time internally
+                
+                if uci_move and len(uci_move) >= 4:
+                    move = self._parse_and_validate_move(uci_move)
+                    if move:
+                        # Only log if it's an engine move (not a book move)
+                        if not getattr(self.engine, '_last_move_was_book', False):
+                            move_count = getattr(self.engine, 'move_count', 0) + 1
+                            print(f"🤖 Engine move: {uci_move} (move #{move_count})")
+                        self.move_queue.put(move)
+                        return
+                    elif attempt == self.max_retries:
+                        print(f"⚠️ All retries exhausted for invalid move {uci_move}")
+                        # Debug: Compare engine FEN with current game FEN
+                        with self.game.board_state_lock:
+                            current_game_fen = self.game.board.to_fen(self.game.next_player)
+                        print(f"🔍 Engine FEN: {self.fen}")
+                        print(f"🔍 Game FEN:   {current_game_fen}")
+                        if self.fen != current_game_fen:
+                            print(f"🚨 FEN MISMATCH DETECTED! Engine and game are out of sync!")
+                            print(f"🔄 Attempting emergency resynchronization...")
+                            # Try one final resync and move generation
+                            if self._synchronize_engine_position():
+                                final_move = self.engine.get_best_move(2000)  # Quick 2-second move
+                                if final_move:
+                                    final_parsed = self._parse_and_validate_move(final_move)
+                                    if final_parsed:
+                                        print(f"✅ Emergency resync successful: {final_move}")
+                                        self.move_queue.put(final_parsed)
+                                        return
+                        self._generate_fallback_move()
+                        return
+                elif attempt == self.max_retries:
+                    print(f"🚨 ENGINE FAILURE: Engine returned invalid move after all retries: {uci_move}")
+                    print(f"🔍 Engine FEN: {self.fen}")
+                    self._generate_fallback_move()
+                    return
+                    
         except Exception as e:
-            print(f"Engine worker error: {e}")
+            print(f"🚨 ENGINE FAILURE: Engine worker exception: {e}")
+            print(f"🔍 Engine FEN: {self.fen}")
+            import traceback
+            traceback.print_exc()
+            self._generate_fallback_move()
+    
+    def _synchronize_engine_position(self):
+        """Ensure engine position matches the current game state with robust error handling"""
+        max_sync_attempts = 3
+        
+        for attempt in range(max_sync_attempts):
+            try:
+                # Re-generate FEN from current game state to ensure accuracy
+                with self.game.board_state_lock:
+                    current_fen = self.game.board.to_fen(self.game.next_player)
+                
+                if not current_fen:
+                    print(f"🚨 SYNC FAILURE (attempt {attempt + 1}): Failed to generate current FEN for synchronization")
+                    print(f"🔍 Next player: {self.game.next_player}")
+                    if attempt < max_sync_attempts - 1:
+                        time.sleep(0.05)  # Brief pause before retry
+                        continue
+                    return False
+                
+                # Validate the FEN before using it
+                try:
+                    import chess
+                    test_board = chess.Board(current_fen)
+                    if not test_board.is_valid():
+                        print(f"🚨 SYNC FAILURE (attempt {attempt + 1}): Generated invalid FEN: {current_fen}")
+                        if attempt < max_sync_attempts - 1:
+                            time.sleep(0.05)
+                            continue
+                        return False
+                except Exception as e:
+                    print(f"🚨 SYNC FAILURE (attempt {attempt + 1}): FEN validation failed: {e}")
+                    print(f"🔍 FEN: {current_fen}")
+                    if attempt < max_sync_attempts - 1:
+                        time.sleep(0.05)
+                        continue
+                    return False
+                    
+                # Update our FEN if it's different
+                if current_fen != self.fen:
+                    # Only print sync message if there's a significant difference (not just en passant flags)
+                    if not self._fen_positions_equivalent(current_fen, self.fen):
+                        print(f"🔄 Synchronizing engine position: {self.fen} -> {current_fen}")
+                    self.fen = current_fen
+                
+                # Set engine position with retry logic
+                for set_attempt in range(2):
+                    if self.engine.set_position(self.fen):
+                        # Verify the position was actually set correctly
+                        # Use more tolerant comparison that ignores minor FEN differences
+                        if hasattr(self.engine, 'last_fen') and self._fen_positions_equivalent(self.engine.last_fen, self.fen):
+                            return True
+                        elif set_attempt == 0:
+                            print(f"🔄 Engine position verification failed, retrying...")
+                            print(f"🔍 Expected: {self.fen}")
+                            print(f"🔍 Got: {getattr(self.engine, 'last_fen', 'None')}")
+                            time.sleep(0.02)
+                            continue
+                    elif set_attempt == 0:
+                        print(f"🔄 Engine set_position failed, retrying...")
+                        time.sleep(0.02)
+                        continue
+                
+                print("🚨 SYNC FAILURE: Failed to set engine position during synchronization")
+                print(f"🔍 FEN: {self.fen}")
+                if attempt < max_sync_attempts - 1:
+                    time.sleep(0.1)
+                    continue
+                return False
+                    
+            except Exception as e:
+                print(f"🚨 SYNC FAILURE (attempt {attempt + 1}): Error synchronizing engine position: {e}")
+                print(f"🔍 FEN: {getattr(self, 'fen', 'None')}")
+                if attempt == max_sync_attempts - 1:
+                    import traceback
+                    traceback.print_exc()
+                else:
+                    time.sleep(0.1)
+                    continue
+        
+        return False
+    
+    def _fen_positions_equivalent(self, fen1, fen2):
+        """Check if two FEN strings represent equivalent positions, ignoring minor differences"""
+        if not fen1 or not fen2:
+            return False
+        
+        try:
+            # Split FEN into components
+            parts1 = fen1.split()
+            parts2 = fen2.split()
+            
+            if len(parts1) < 4 or len(parts2) < 4:
+                return False
+            
+            # Compare the essential parts:
+            # 1. Piece placement (must be identical)
+            if parts1[0] != parts2[0]:
+                return False
+            
+            # 2. Active color (must be identical)  
+            if parts1[1] != parts2[1]:
+                return False
+            
+            # 3. Castling rights (must be identical)
+            if parts1[2] != parts2[2]:
+                return False
+            
+            # 4. En passant target (allow some flexibility)
+            # Sometimes one system shows en passant target, another doesn't
+            # This is often due to different validation of whether en passant is actually possible
+            en_passant1 = parts1[3] if len(parts1) > 3 else "-"
+            en_passant2 = parts2[3] if len(parts2) > 3 else "-"
+            
+            # If both have en passant targets, they must match
+            if en_passant1 != "-" and en_passant2 != "-" and en_passant1 != en_passant2:
+                return False
+            
+            # If one has en passant and the other doesn't, it's still considered equivalent
+            # This handles cases where different systems have different en passant validation logic
+            
+            # 5. Move counts (allow minor differences)
+            # These are less critical for position equivalence
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error comparing FEN positions: {e}")
+            return fen1 == fen2  # Fallback to exact comparison
+    
+    def _parse_and_validate_move(self, uci_move):
+        """Parse UCI move and validate it against current board state"""
+        try:
+            col_map = {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7}
+            
+            from_col = col_map[uci_move[0]]
+            from_row = 8 - int(uci_move[1])
+            to_col = col_map[uci_move[2]]
+            to_row = 8 - int(uci_move[3])
+            
+            # Validate coordinates
+            if not (0 <= from_row < 8 and 0 <= from_col < 8 and 
+                    0 <= to_row < 8 and 0 <= to_col < 8):
+                print(f"Invalid move coordinates: {uci_move}")
+                return None
+            
+            initial = Square(from_row, from_col)
+            final = Square(to_row, to_col)
+            move = Move(initial, final)
+            
+            # Validate against current board state
+            with self.game.board_state_lock:
+                initial_square = self.game.board.squares[from_row][from_col]
+                final_square = self.game.board.squares[to_row][to_col]
+                
+                if not initial_square.has_piece():
+                    print(f"Invalid UCI move {uci_move}: No piece on initial square {chr(97+from_col)}{8-from_row}")
+                    # Debug: Show current board FEN for comparison
+                    current_fen = self.game.board.to_fen(self.game.next_player)
+                    print(f"🔍 Current board FEN: {current_fen}")
+                    print(f"🔍 Engine working with FEN: {self.fen}")
+                    return None
+                
+                piece = initial_square.piece
+                if piece.color != self.game.next_player:
+                    print(f"Invalid UCI move {uci_move}: Wrong color piece on {chr(97+from_col)}{8-from_row}")
+                    print(f"🔍 Expected: {self.game.next_player}, Found: {piece.color}")
+                    return None
+                
+                if final_square.has_piece() and final_square.piece.color == piece.color:
+                    print(f"Invalid UCI move {uci_move}: Cannot capture own piece on {chr(97+to_col)}{8-to_row}")
+                    return None
+                
+                # Additional validation: Check if move is actually legal using chess rules
+                try:
+                    import chess
+                    current_fen = self.game.board.to_fen(self.game.next_player)
+                    test_board = chess.Board(current_fen)
+                    chess_move = chess.Move.from_uci(uci_move)
+                    
+                    if chess_move not in test_board.legal_moves:
+                        print(f"Invalid UCI move {uci_move}: Not a legal chess move")
+                        print(f"🔍 Legal moves: {[str(m) for m in list(test_board.legal_moves)[:5]]}")
+                        return None
+                        
+                except Exception as e:
+                    print(f"Warning: Could not validate move legality with chess library: {e}")
+                    # Continue with basic validation
+            
+            return move
+            
+        except (KeyError, ValueError, IndexError, AttributeError) as e:
+            print(f"Error parsing UCI move {uci_move}: {e}")
+            return None
+    
+    def _generate_fallback_move(self):
+        """Generate a fallback move when engine fails to provide a valid move"""
+        try:
+            print("🚨 Generating fallback move due to engine failure")
+            
+            # Use chess library to get legal moves from current FEN
+            try:
+                import chess
+                
+                # Get current FEN from engine
+                current_fen = self.engine.last_fen
+                if not current_fen:
+                    print("❌ Could not get current FEN position")
+                    return
+                
+                # Create chess board from FEN
+                board = chess.Board(current_fen)
+                legal_moves = list(board.legal_moves)
+                
+                if legal_moves:
+                    # Choose a random legal move as fallback
+                    import random
+                    chess_move = random.choice(legal_moves)
+                    uci_move = chess_move.uci()
+                    
+                    print(f"✅ Generated fallback UCI move: {uci_move}")
+                    
+                    # Convert UCI to internal move format
+                    try:
+                        # Parse UCI move (e.g., "e2e4")
+                        from_square = uci_move[:2]
+                        to_square = uci_move[2:4]
+                        
+                        # Convert to internal coordinates
+                        from_col = ord(from_square[0]) - ord('a')
+                        from_row = 8 - int(from_square[1])
+                        to_col = ord(to_square[0]) - ord('a')
+                        to_row = 8 - int(to_square[1])
+                        
+                        # Create internal move object
+                        from_sq = Square(from_row, from_col)
+                        to_sq = Square(to_row, to_col)
+                        fallback_move = Move(from_sq, to_sq)
+                        
+                        print(f"✅ Converted to internal move: {from_square}->{to_square}")
+                        self.move_queue.put(fallback_move)
+                        
+                    except Exception as conv_error:
+                        print(f"❌ Error converting UCI move {uci_move}: {conv_error}")
+                        
+                else:
+                    print("❌ No legal moves available - game should be over")
+                    
+            except ImportError:
+                print("❌ Chess library not available for fallback move generation")
+                
+        except Exception as e:
+            print(f"Error generating fallback move: {e}")
             import traceback
             traceback.print_exc()
 
@@ -115,17 +406,16 @@ class EvaluationWorker(Thread):
 
 class EngineConfigWorker(Thread):
     """
-    Background thread for engine configuration to prevent UI freezing.
+    Background thread for ELO-based engine configuration to prevent UI freezing.
     
-    This worker handles engine depth and skill level changes in a separate thread,
-    ensuring the main UI remains responsive even when configuring high-depth engines.
+    This worker handles engine ELO changes in a separate thread,
+    ensuring the main UI remains responsive even when configuring high-strength engines.
     Supports cancellation for rapid setting changes.
     """
-    def __init__(self, game, config_type, value):
+    def __init__(self, game, target_elo):
         super().__init__()
         self.game = game
-        self.config_type = config_type  # 'depth' or 'level'
-        self.value = value
+        self.target_elo = target_elo
         self.daemon = True
         self._stop_requested = False
 
@@ -142,28 +432,45 @@ class EngineConfigWorker(Thread):
             if self._stop_requested:
                 return
                 
-            if self.config_type == 'depth':
-                # Check if depth is already set to avoid redundant calls
-                current_depth = getattr(self.game, 'current_engine_depth', None)
-                if current_depth != self.value:
-                    if self.game.engine_white_instance:
-                        self.game.engine_white_instance.set_depth(self.value)
-                    if self.game.engine_black_instance:
-                        self.game.engine_black_instance.set_depth(self.value)
-                    self.game.current_engine_depth = self.value
-                    print(f"✓ Both engines depth set to {self.value}")
-            elif self.config_type == 'level':
-                # Check if level is already set to avoid redundant calls
-                current_level = getattr(self.game, 'current_engine_level', None)
-                if current_level != self.value:
-                    if self.game.engine_white_instance:
-                        self.game.engine_white_instance.set_skill_level(self.value)
-                    if self.game.engine_black_instance:
-                        self.game.engine_black_instance.set_skill_level(self.value)
-                    self.game.current_engine_level = self.value
-                    print(f"✓ Both engines skill level set to {self.value}")
+            # Check if ELO is already set to avoid redundant calls
+            current_elo = getattr(self.game, 'current_engine_elo', None)
+            if current_elo != self.target_elo:
+                strength_category = self.game.get_strength_category() if hasattr(self.game, 'get_strength_category') else "Unknown"
+                
+                if self.game.engine_white_instance:
+                    self.game.engine_white_instance.set_elo(self.target_elo)
+                    self.game.white_elo = self.target_elo  # Update for PGN manager
+                    # Restart opening book with new ELO
+                    if self.game.game_mode == 2:  # Engine vs Engine
+                        self.game.engine_white_instance.start_new_game(
+                            opponent_elo=self.game.black_elo,
+                            game_type="engine_vs_engine"
+                        )
+                    elif self.game.game_mode == 1 and self.game.engine_white:  # Human vs Engine (white engine)
+                        self.game.engine_white_instance.start_new_game(
+                            opponent_elo=None,
+                            game_type="human_vs_engine"
+                        )
+                        
+                if self.game.engine_black_instance:
+                    self.game.engine_black_instance.set_elo(self.target_elo)
+                    self.game.black_elo = self.target_elo  # Update for PGN manager
+                    # Restart opening book with new ELO
+                    if self.game.game_mode == 2:  # Engine vs Engine
+                        self.game.engine_black_instance.start_new_game(
+                            opponent_elo=self.game.white_elo,
+                            game_type="engine_vs_engine"
+                        )
+                    elif self.game.game_mode == 1 and self.game.engine_black:  # Human vs Engine (black engine)
+                        self.game.engine_black_instance.start_new_game(
+                            opponent_elo=None,
+                            game_type="human_vs_engine"
+                        )
+                    
+                self.game.current_engine_elo = self.target_elo
+                print(f"✓ Both engines set to {strength_category} (ELO {self.target_elo})")
         except Exception as e:
-            print(f"Engine config worker error: {e}")
+            print(f"Engine ELO config worker error: {e}")
 
 class Game:
     def __init__(self):
@@ -217,30 +524,33 @@ class Game:
         self.engine_white = False
         self.engine_black = False
         
-        # Set default engine settings first
-        self.depth = 15
-        self.level = 10
+        # Set default ELO-based engine settings
+        self.target_elo = 1500  # Default to casual level
+        self.white_elo = 2000   # White engine ELO for engine vs engine mode (configurable via UI)
+        self.black_elo = 2000   # Black engine ELO for engine vs engine mode (configurable via UI)
         
         # Create separate engines for white and black with multi-core optimization
         self.engine_creation_lock = Lock()
         import os
         cpu_count = os.cpu_count() or 4
         try:
-            # Initialize engines with current game settings
-            self.engine_white_instance = ChessEngine(skill_level=self.level, depth=self.depth)
-            self.engine_black_instance = ChessEngine(skill_level=self.level, depth=self.depth)
+            # Initialize engines with separate ELO settings for engine vs engine mode
+            self.engine_white_instance = ChessEngine(target_elo=self.white_elo)
+            self.engine_black_instance = ChessEngine(target_elo=self.black_elo)
             self.engine = self.engine_white_instance  # Default for compatibility
-            print(f"✓ Chess engines initialized for {cpu_count} CPU cores (skill={self.level}, depth={self.depth})")
+            print(f"✓ Chess engines initialized for {cpu_count} CPU cores (White: {self.white_elo}, Black: {self.black_elo})")
         except Exception as e:
             print(f"✗ Failed to initialize chess engines: {e}")
             self.engine_white_instance = None
             self.engine_black_instance = None
             self.engine = None
         self.game_mode = 0
-        self.current_engine_depth = None  # Track current engine depth
-        self.current_engine_level = None  # Track current engine level
+        self.current_engine_elo = None  # Track current engine ELO
         self.evaluation = None
         self.evaluation_lock = Lock()
+        
+        # Game timing
+        self.game_start_time = None
         
         # Game state
         self.game_over = False
@@ -273,21 +583,78 @@ class Game:
         
         # PGN recording system
         self.pgn = PGNIntegration(self)
-        self.pgn.start_recording()  # Auto-start recording
+        # Note: PGN recording will be started after game mode is set
+        
+        # Thread-safe board manager for position validation and synchronization
+        self.board_manager = None
+        if THREAD_SAFE_BOARD_AVAILABLE:
+            self.board_manager = ThreadSafeBoardManager(self.board)
+            print("✓ Thread-safe board manager initialized")
+        elif BOARD_SYNCHRONIZER_AVAILABLE:
+            # Fallback to basic synchronizer
+            self.board_synchronizer = BoardSynchronizer()
+            starting_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+            self.board_synchronizer.set_position_from_fen(starting_fen)
+            print("✓ Board synchronizer initialized with starting position")
+        else:
+            print("⚠️ No board synchronization available")
 
     # Game mode methods
     def set_game_mode(self, mode):
-        """Set game mode and update engine settings"""
+        """Set game mode and update engine settings with thermal management"""
         self.game_mode = mode
         if mode == 0:  # Human vs Human
             self.engine_white = False
             self.engine_black = False
+            # Keep thermal mode enabled by default for all modes
+            if self.engine_white_instance:
+                self.engine_white_instance.enable_thermal_mode(True)
+            if self.engine_black_instance:
+                self.engine_black_instance.enable_thermal_mode(True)
         elif mode == 1:  # Human vs Engine
             self.engine_white = False
             self.engine_black = True
+            # Keep thermal mode enabled by default for all modes
+            if self.engine_white_instance:
+                self.engine_white_instance.enable_thermal_mode(True)
+            if self.engine_black_instance:
+                self.engine_black_instance.enable_thermal_mode(True)
         elif mode == 2:  # Engine vs Engine
             self.engine_white = True
             self.engine_black = True
+            # Keep thermal mode enabled by default for all modes
+            if self.engine_white_instance:
+                self.engine_white_instance.enable_thermal_mode(True)
+            if self.engine_black_instance:
+                self.engine_black_instance.enable_thermal_mode(True)
+        
+        print("🌡️ Thermal management enabled by default for optimal performance")
+        
+        # Initialize opening book for new game mode
+        try:
+            if mode == 1:  # Human vs Engine - only black engine active
+                if self.engine_black_instance:
+                    self.engine_black_instance.start_new_game(
+                        opponent_elo=None,  # Human opponent
+                        game_type="human_vs_engine"
+                    )
+            elif mode == 2:  # Engine vs Engine - both engines active
+                if self.engine_white_instance:
+                    self.engine_white_instance.start_new_game(
+                        opponent_elo=self.black_elo,
+                        game_type="engine_vs_engine"
+                    )
+                if self.engine_black_instance:
+                    self.engine_black_instance.start_new_game(
+                        opponent_elo=self.white_elo,
+                        game_type="engine_vs_engine"
+                    )
+        except Exception as e:
+            print(f"Error initializing opening book for game mode {mode}: {e}")
+        
+        # Start or restart PGN recording with correct headers
+        if hasattr(self, 'pgn') and self.pgn:
+            self.pgn.start_recording()
 
     def _get_engine_for_player(self, player):
         """Get the correct engine instance for the given player"""
@@ -304,9 +671,11 @@ class Game:
                 return self.engine_black_instance
     
     def _recreate_engine(self, color):
-        """Recreate engine with preserved settings"""
+        """Recreate engine with preserved ELO settings"""
         try:
-            print(f"🔄 Recreating {color} engine with preserved settings (skill={self.level}, depth={self.depth})")
+            # Use appropriate ELO for each engine
+            target_elo = self.white_elo if color == 'white' else self.black_elo
+            print(f"🔄 Recreating {color} engine with preserved settings (ELO={target_elo})")
             
             # Clean up old engine
             if color == 'white' and self.engine_white_instance:
@@ -314,8 +683,8 @@ class Game:
             elif color == 'black' and self.engine_black_instance:
                 self.engine_black_instance.cleanup()
             
-            # Create new engine with current settings
-            new_engine = ChessEngine(skill_level=self.level, depth=self.depth)
+            # Create new engine with appropriate ELO settings
+            new_engine = ChessEngine(target_elo=target_elo)
             
             if color == 'white':
                 self.engine_white_instance = new_engine
@@ -332,6 +701,34 @@ class Game:
                 self.engine_white_instance = None
             else:
                 self.engine_black_instance = None
+    
+    def get_strength_category(self):
+        """Get human-readable strength category"""
+        elo = self.target_elo
+        if elo <= 1200: return "Beginner"
+        elif elo <= 1600: return "Casual"
+        elif elo <= 2000: return "Club Player"
+        elif elo <= 2200: return "Expert"
+        elif elo <= 2400: return "Master"
+        elif elo <= 2500: return "International Master"
+        elif elo <= 2700: return "Grandmaster"
+        elif elo <= 2800: return "Super GM"
+        else: return "World Class/Engine Max"
+    
+    def get_elo_range_for_category(self, category):
+        """Get ELO range for a given category"""
+        ranges = {
+            "Beginner": (800, 1200),
+            "Casual": (1200, 1600),
+            "Club Player": (1600, 2000),
+            "Expert": (2000, 2200),
+            "Master": (2200, 2400),
+            "International Master": (2400, 2500),
+            "Grandmaster": (2500, 2700),
+            "Super GM": (2700, 2800),
+            "World Class/Engine Max": (2800, 3600)
+        }
+        return ranges.get(category, (1200, 1600))
 
     # Board rendering methods
     def show_bg(self, surface):
@@ -378,7 +775,8 @@ class Game:
         
         # Engine info
         if self.engine_white or self.engine_black:
-            engine_info = f"Engine Level: {self.level}/20 | Depth: {self.depth}"
+            strength_category = self.get_strength_category()
+            engine_info = f"Engine: {strength_category} (ELO {self.target_elo})"
             info_surface = status_font.render(engine_info, True, (200, 200, 200))
             surface.blit(info_surface, (display_width - 280, 35))
         
@@ -711,29 +1109,48 @@ class Game:
         """Reset the game to initial state"""
         # Store current settings
         current_mode = self.game_mode
-        current_level = self.level
-        current_depth = self.depth
+        current_elo = self.target_elo
         
         # Reset game state
         self.__init__()
         
         # Restore settings
         self.game_mode = current_mode
-        self.level = current_level  
-        self.depth = current_depth
+        self.target_elo = current_elo
         self.set_game_mode(current_mode)
-        # Use threaded methods to restore engine settings
-        self.set_engine_level(current_level)
-        self.set_engine_depth(current_depth)
+        # Use threaded method to restore engine ELO settings
+        self.set_engine_elo(current_elo)
         
-        # Reset opening book move counters
+        # Reset opening book move counters and engine board states
         try:
             if hasattr(self, 'engine_white_instance') and self.engine_white_instance:
                 self.engine_white_instance.reset_move_count()
+                self.engine_white_instance.reset()
+                # Start new game for ELO-aware opening book
+                self.engine_white_instance.start_new_game(
+                    opponent_elo=self.black_elo if current_mode == 2 else None,
+                    game_type="engine_vs_engine" if current_mode == 2 else "human_vs_engine"
+                )
             if hasattr(self, 'engine_black_instance') and self.engine_black_instance:
                 self.engine_black_instance.reset_move_count()
+                self.engine_black_instance.reset()
+                # Start new game for ELO-aware opening book
+                self.engine_black_instance.start_new_game(
+                    opponent_elo=self.white_elo if current_mode == 2 else None,
+                    game_type="engine_vs_engine" if current_mode == 2 else "human_vs_engine"
+                )
         except Exception as e:
-            print(f"Error resetting move counts: {e}")
+            print(f"Error resetting engines: {e}")
+        
+        # Reset board manager/synchronizer
+        if self.board_manager:
+            self.board_manager.reset_to_starting_position()
+            print("✓ Thread-safe board manager reset to starting position")
+        elif hasattr(self, 'board_synchronizer') and self.board_synchronizer:
+            self.board_synchronizer.reset_to_starting_position()
+            print("✓ Board synchronizer reset to starting position")
+        
+
         
 
 
@@ -752,52 +1169,144 @@ class Game:
             self.game_mode = 2
         else:
             self.game_mode = 1
+            
+        # Restart PGN recording with correct headers
+        if hasattr(self, 'pgn') and self.pgn:
+            self.pgn.start_recording()
 
-    def set_engine_depth(self, depth):
-        """Set engine search depth (threaded to prevent UI freezing)"""
+    def set_engine_elo(self, target_elo):
+        """Set engine ELO rating for both engines (threaded to prevent UI freezing)"""
         with self.engine_creation_lock:
             if not self.engine_white_instance or not self.engine_black_instance:
                 return
                 
-            self.depth = max(1, min(20, depth))
+            self.target_elo = max(800, min(3600, target_elo))
             
             # Stop any existing config thread
-            if self.config_thread and self.config_thread.is_alive():
+            if hasattr(self, 'config_thread') and self.config_thread and self.config_thread.is_alive():
                 self.config_thread.stop()
                 
             # Start new config thread
             try:
-                self.config_thread = EngineConfigWorker(self, 'depth', self.depth)
+                self.config_thread = EngineConfigWorker(self, self.target_elo)
                 self.config_thread.start()
             except Exception as e:
-                print(f"Error setting engine depth: {e}")
+                print(f"Error setting engine ELO: {e}")
+    
+    def set_white_engine_elo(self, target_elo):
+        """Set white engine ELO rating specifically"""
+        with self.engine_creation_lock:
+            if not self.engine_white_instance:
+                return
+                
+            target_elo = max(800, min(3600, target_elo))
+            
+            try:
+                self.engine_white_instance.set_elo(target_elo)
+                self.white_elo = target_elo  # Update the ELO used by PGN manager
+                strength_category = self._get_elo_category(target_elo)
+                print(f"✓ White engine set to {strength_category} (ELO {target_elo})")
+            except Exception as e:
+                print(f"Error setting white engine ELO: {e}")
+    
+    def set_black_engine_elo(self, target_elo):
+        """Set black engine ELO rating specifically"""
+        with self.engine_creation_lock:
+            if not self.engine_black_instance:
+                return
+                
+            target_elo = max(800, min(3600, target_elo))
+            
+            try:
+                self.engine_black_instance.set_elo(target_elo)
+                self.black_elo = target_elo  # Update the ELO used by PGN manager
+                strength_category = self._get_elo_category(target_elo)
+                print(f"✓ Black engine set to {strength_category} (ELO {target_elo})")
+            except Exception as e:
+                print(f"Error setting black engine ELO: {e}")
+    
+    def _get_elo_category(self, elo):
+        """Get ELO category name - matches engine.py categorization"""
+        if elo <= 900: return "Beginner"
+        elif elo <= 1000: return "Novice"
+        elif elo <= 1100: return "Amateur"
+        elif elo <= 1200: return "Club Beginner"
+        elif elo <= 1300: return "Club Player"
+        elif elo <= 1400: return "Club Intermediate"
+        elif elo <= 1500: return "Club Advanced"
+        elif elo <= 1600: return "Strong Club"
+        elif elo <= 1700: return "Tournament Player"
+        elif elo <= 1800: return "Expert"
+        elif elo <= 1900: return "Strong Expert"
+        elif elo <= 2000: return "Candidate Master"
+        elif elo <= 2100: return "National Master"
+        elif elo <= 2200: return "FIDE Master"
+        elif elo <= 2300: return "International Master"
+        elif elo <= 2400: return "Strong IM"
+        elif elo <= 2500: return "Grandmaster"
+        elif elo <= 2600: return "Strong GM"
+        elif elo <= 2700: return "Super GM"
+        elif elo <= 2800: return "Elite GM"
+        elif elo <= 2900: return "World Class GM"
+        elif elo <= 3000: return "World Championship Level"
+        elif elo <= 3200: return "Computer Strength"
+        else: return "Maximum Engine Strength"
+
+    def increase_elo(self, amount=100):
+        """Increase engine ELO by specified amount"""
+        self.set_engine_elo(self.target_elo + amount)
+
+    def decrease_elo(self, amount=100):
+        """Decrease engine ELO by specified amount"""
+        self.set_engine_elo(self.target_elo - amount)
+    
+    def set_strength_category(self, category):
+        """Set engine strength by category name"""
+        ranges = {
+            "Beginner": 1000,
+            "Casual": 1400,
+            "Club Player": 1800,
+            "Expert": 2100,
+            "Master": 2300,
+            "International Master": 2450,
+            "Grandmaster": 2600,
+            "Super GM": 2750,
+            "World Class/Engine Max": 3600
+        }
+        target_elo = ranges.get(category, 1500)
+        self.set_engine_elo(target_elo)
+    
+    # Legacy methods for backward compatibility (deprecated)
+    def set_engine_depth(self, depth):
+        """Deprecated: Use set_engine_elo() instead"""
+        print("Warning: set_engine_depth() is deprecated. Use set_engine_elo() instead.")
+        # Convert depth to approximate ELO for backward compatibility
+        if depth <= 5: target_elo = 1000
+        elif depth <= 8: target_elo = 1400
+        elif depth <= 12: target_elo = 1800
+        elif depth <= 16: target_elo = 2200
+        elif depth <= 20: target_elo = 2600
+        else: target_elo = 3600
+        self.set_engine_elo(target_elo)
 
     def set_engine_level(self, level):
-        """Set engine skill level (threaded to prevent UI freezing)"""
-        with self.engine_creation_lock:
-            if not self.engine_white_instance or not self.engine_black_instance:
-                return
-                
-            self.level = max(0, min(20, level))
-            
-            # Stop any existing config thread
-            if self.config_thread and self.config_thread.is_alive():
-                self.config_thread.stop()
-                
-            # Start new config thread
-            try:
-                self.config_thread = EngineConfigWorker(self, 'level', self.level)
-                self.config_thread.start()
-            except Exception as e:
-                print(f"Error setting engine level: {e}")
+        """Deprecated: Use set_engine_elo() instead"""
+        print("Warning: set_engine_level() is deprecated. Use set_engine_elo() instead.")
+        # Convert skill level to approximate ELO for backward compatibility
+        elo_map = {0: 800, 1: 1000, 2: 1200, 4: 1400, 6: 1600, 8: 1800, 
+                   10: 2000, 12: 2200, 15: 2400, 17: 2500, 19: 2700, 20: 2800}
+        target_elo = elo_map.get(level, 1500)
+        self.set_engine_elo(target_elo)
 
     def increase_level(self):
-        """Increase engine level"""
-        self.set_engine_level(self.level + 1)
+        """Deprecated: Use increase_elo() instead"""
+        print("Warning: increase_level() is deprecated. Use increase_elo() instead.")
+        self.increase_elo(100)
 
     def decrease_level(self):
-        """Decrease engine level"""
-        self.set_engine_level(self.level - 1)
+        """Deprecated: Use decrease_elo() instead"""
+        print("Warning: decrease_level() is deprecated. Use decrease_elo() instead.")
+        self.decrease_elo(100)
 
     def schedule_evaluation(self):
         """Schedule position evaluation (throttled)"""
@@ -815,9 +1324,22 @@ class Game:
             current_time - self.last_evaluation_time > self.evaluation_interval):
             
             try:
-                # Thread-safe FEN generation
+                # CRITICAL: Always use authoritative source for FEN
                 with self.board_state_lock:
-                    fen = self.board.to_fen(self.next_player)
+                    if self.board_manager:
+                        fen = self.board_manager.get_current_fen()
+                        # Validate the FEN before using it
+                        if not fen or 'pB' in fen or 'Bp' in fen:  # Check for impossible piece combinations
+                            print(f"⚠️ Detected corrupted FEN: {fen}")
+                            # Force board manager reset if corruption detected
+                            self.board_manager.reset_to_starting_position()
+                            fen = self.board_manager.get_current_fen()
+                            print(f"🔄 Reset to clean state: {fen}")
+                    elif hasattr(self, 'board_synchronizer') and self.board_synchronizer:
+                        fen = self.board_synchronizer.get_current_fen()
+                    else:
+                        print("⚠️ WARNING: No authoritative board source available!")
+                        fen = self.board.to_fen(self.next_player)
                 
                 if fen is None:
                     print("FEN generation returned None, cannot schedule evaluation")
@@ -874,9 +1396,19 @@ class Game:
                     return
                     
                 try:
-                    # Thread-safe FEN generation
+                    # CRITICAL: Always use authoritative source for FEN
                     with self.board_state_lock:
-                        fen = self.board.to_fen(self.next_player)
+                        if self.board_manager:
+                            fen = self.board_manager.get_current_fen()
+                            # Validate FEN integrity
+                            if not fen or len(fen.split()) != 6:
+                                print(f"⚠️ Invalid FEN structure: {fen}")
+                                return
+                        elif hasattr(self, 'board_synchronizer') and self.board_synchronizer:
+                            fen = self.board_synchronizer.get_current_fen()
+                        else:
+                            print("⚠️ WARNING: No authoritative board source for engine move!")
+                            fen = self.board.to_fen(self.next_player)
                     
                     if fen is None:
                         print("FEN generation returned None, board state corrupted")
@@ -884,6 +1416,7 @@ class Game:
                         return
                     
                     if fen and len(fen.strip()) > 0 and self._validate_fen(fen):
+
                         self.engine_thread = EngineWorker(self, fen, self.engine_move_queue, current_engine)
                         self.engine_thread.start()
                     else:
@@ -894,18 +1427,27 @@ class Game:
                     print(f"Error scheduling engine move: {e}")
     
     def _calculate_engine_timeout(self):
-        """Calculate engine timeout based on current settings"""
-        if not hasattr(self, 'level') or not hasattr(self, 'depth'):
-            return 8  # Default timeout
-        
-        if self.level >= 20 and self.depth >= 20:
-            return 30  # Maximum strength
-        elif self.level >= 18 or self.depth >= 18:
-            return 20  # Very high strength
-        elif self.level >= 15 or self.depth >= 15:
-            return 12  # High strength
+        """Calculate engine timeout based on current player's engine ELO rating"""
+        # Get the current engine's ELO, not the game's default ELO
+        current_engine = self._get_engine_for_player(self.next_player)
+        if current_engine and hasattr(current_engine, 'target_elo'):
+            elo = current_engine.target_elo
+        elif hasattr(self, 'target_elo'):
+            elo = self.target_elo
         else:
-            return 8   # Normal play
+            return 10  # Default timeout
+        
+        # Calculate timeout based on ELO with buffer for depth completion
+        # REDUCED timeouts for better user experience and responsiveness
+        if elo <= 1200: return 3      # Beginner - 3s buffer
+        elif elo <= 1600: return 5    # Casual - 5s buffer  
+        elif elo <= 2000: return 10   # Club Player - 10s buffer
+        elif elo <= 2200: return 15   # Expert - 15s buffer
+        elif elo <= 2400: return 25   # Master - 25s buffer
+        elif elo <= 2500: return 35   # International Master - 35s buffer
+        elif elo <= 2700: return 45   # Grandmaster - 45s buffer
+        elif elo <= 2800: return 60   # Super GM - 60s buffer
+        else: return 75                # World Class/Engine Max - 75s buffer (reduced from 150s)
     
     def check_engine_timeout(self):
         """Check if engine thread has been running too long and terminate if needed"""
@@ -924,10 +1466,7 @@ class Game:
                         try:
                             current_engine = self._get_engine_for_player(self.next_player)
                             if current_engine:
-                                # Temporarily reduce depth for quick move
-                                original_depth = current_engine.depth
-                                current_engine.set_depth(min(8, original_depth))
-                                
+                                # Use time-based approach instead of deprecated set_depth
                                 fen = self.board.to_fen(self.next_player)
                                 if current_engine.set_position(fen):
                                     quick_move = current_engine.get_best_move(2000)  # 2 second limit
@@ -948,9 +1487,6 @@ class Game:
                                                 print(f"✅ Quick move generated: {quick_move}")
                                         except (KeyError, ValueError, IndexError):
                                             pass
-                                
-                                # Restore original depth
-                                current_engine.set_depth(original_depth)
                         except Exception as e:
                             print(f"Error generating quick move: {e}")
                         
@@ -1196,12 +1732,68 @@ class Game:
                 'move_number': 1
             }
 
+    def _is_valid_move(self, piece, move):
+        """Validate that a move is legal before executing it"""
+        try:
+            # Basic bounds checking
+            if not (0 <= move.initial.row < 8 and 0 <= move.initial.col < 8 and
+                    0 <= move.final.row < 8 and 0 <= move.final.col < 8):
+                print(f"🔍 Move validation failed: Out of bounds")
+                return False
+            
+            # Check that the piece is actually on the initial square
+            initial_square = self.board.squares[move.initial.row][move.initial.col]
+            if not initial_square.has_piece():
+                print(f"🔍 Move validation failed: No piece on initial square ({move.initial.row},{move.initial.col})")
+                return False
+            
+            if initial_square.piece != piece:
+                actual_piece = initial_square.piece
+                print(f"🔍 Move validation failed: Expected {piece.name} {piece.color}, found {actual_piece.name if actual_piece else 'None'} {actual_piece.color if actual_piece else 'None'}")
+                return False
+            
+            # Check that we're not moving to a square occupied by our own piece
+            final_square = self.board.squares[move.final.row][move.final.col]
+            if final_square.has_piece() and final_square.piece.color == piece.color:
+                print(f"🔍 Move validation failed: Cannot capture own {final_square.piece.name} at ({move.final.row},{move.final.col})")
+                return False
+            
+            # Calculate legal moves for this piece and check if the move is in the list
+            self.board.calc_moves(piece, move.initial.row, move.initial.col, bool=True)
+            is_legal = move in piece.moves
+            
+            if not is_legal:
+                # Debug: Show what moves are actually legal for this piece
+                legal_moves = [(m.initial.row, m.initial.col, m.final.row, m.final.col) for m in piece.moves[:5]]  # Show first 5
+                print(f"🔍 Move validation failed: Move not in legal moves list")
+                print(f"🔍 Attempted: ({move.initial.row},{move.initial.col}) -> ({move.final.row},{move.final.col})")
+                print(f"🔍 Legal moves (first 5): {legal_moves}")
+                print(f"🔍 Current board FEN: {self.board.to_fen(self.next_player)}")
+            
+            piece.clear_moves()  # Clean up
+            
+            return is_legal
+            
+        except Exception as e:
+            print(f"Error validating move: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
             
     def make_move(self, piece, move):
         """Make a move and record it for analysis"""
         with self.board_state_lock:
+            # Validate move before executing
+            if not self._is_valid_move(piece, move):
+                print(f"⚠️ Invalid move attempted: {piece.name} {piece.color} from ({move.initial.row},{move.initial.col}) to ({move.final.row},{move.final.col})")
+                return False
+            
             # Check for special conditions before move
-            captured = self.board.squares[move.final.row][move.final.col].has_piece()
+            # Only count as captured if there's an enemy piece on the destination square
+            destination_square = self.board.squares[move.final.row][move.final.col]
+            captured = (destination_square.has_piece() and 
+                       destination_square.piece.color != piece.color)
+            
             is_en_passant = (isinstance(piece, Pawn) and 
                             abs(move.initial.col - move.final.col) == 1 and 
                             self.board.squares[move.final.row][move.final.col].isempty() and
@@ -1211,22 +1803,102 @@ class Game:
             # Get evaluation before move (if available)
             eval_before = self.evaluation.copy() if self.evaluation else None
             
-            # Make the actual move
-            self.board.move(piece, move)
-            
-            # Increment move count for opening book tracking
+            # Convert move to UCI format for validation
+            uci_move = None
             try:
-                current_player = 'white' if self.next_player == 'white' else 'black'
-                if current_player == 'white' and hasattr(self, 'engine_white_instance') and self.engine_white_instance:
-                    self.engine_white_instance.increment_move_count()
-                elif current_player == 'black' and hasattr(self, 'engine_black_instance') and self.engine_black_instance:
-                    self.engine_black_instance.increment_move_count()
+                from_square = chr(97 + move.initial.col) + str(8 - move.initial.row)
+                to_square = chr(97 + move.final.col) + str(8 - move.final.row)
+                uci_move = from_square + to_square
+                
+                # CRITICAL: Validate move BEFORE applying to any board
+                if self.board_manager:
+                    if not self.board_manager.is_move_legal(uci_move):
+                        print(f"⚠️ Thread-safe board manager rejected move {uci_move}")
+                        return False
+                elif hasattr(self, 'board_synchronizer') and self.board_synchronizer:
+                    if not self.board_synchronizer.is_move_legal(uci_move):
+                        print(f"⚠️ Synchronizer rejected move {uci_move}")
+                        return False
+                
             except Exception as e:
-                print(f"Error incrementing move count: {e}")
+                print(f"Error converting/validating move to UCI: {e}")
+                return False
             
-            # Switch turns immediately after the move (within the lock)
-            # This prevents race conditions where FEN is generated before turn switch
-            self.next_turn()
+            # ATOMIC OPERATION: Apply move to ALL board representations simultaneously
+            try:
+                # 1. Apply to custom board first (visual representation)
+                self.board.move(piece, move)
+                
+                # 2. Apply to thread-safe manager (authoritative state)
+                if self.board_manager:
+                    if not self.board_manager.apply_move(uci_move):
+                        # Rollback custom board if synchronizer fails
+                        print(f"⚠️ Failed to apply {uci_move} to thread-safe manager, rolling back")
+                        # TODO: Implement rollback mechanism
+                        return False
+                elif hasattr(self, 'board_synchronizer') and self.board_synchronizer:
+                    if not self.board_synchronizer.apply_uci_move(uci_move):
+                        print(f"⚠️ Failed to apply {uci_move} to synchronizer, rolling back")
+                        return False
+                
+                # 3. Switch turns immediately after successful application
+                self.next_turn()
+                
+            except Exception as e:
+                print(f"Error in atomic move application: {e}")
+                return False
+            
+            # Record move in engines (after position is updated)
+            try:
+                if uci_move:
+                    # Record move in both engines for opening intelligence
+                    if hasattr(self, 'engine_white_instance') and self.engine_white_instance:
+                        self.engine_white_instance.record_move_played(uci_move)
+                        # Increment move counter for opening book depth tracking
+                        if hasattr(self.engine_white_instance, 'increment_move_count'):
+                            self.engine_white_instance.increment_move_count()
+                            
+                    if hasattr(self, 'engine_black_instance') and self.engine_black_instance:
+                        self.engine_black_instance.record_move_played(uci_move)
+                        # Increment move counter for opening book depth tracking
+                        if hasattr(self.engine_black_instance, 'increment_move_count'):
+                            self.engine_black_instance.increment_move_count()
+            except Exception as e:
+                print(f"Error recording move in engines: {e}")
+            
+            # Synchronize both engines' internal board states with the new position
+            try:
+                # CRITICAL: Always use thread-safe manager as authoritative source
+                if self.board_manager:
+                    current_fen = self.board_manager.get_current_fen()
+                    # Validate position consistency
+                    if not self.board_manager.validate_position_consistency():
+                        print("⚠️ Position consistency check failed!")
+                        # Force resynchronization from authoritative state
+                        authoritative_fen = self.board_manager.get_current_fen()
+                        print(f"🔄 Forcing resync to: {authoritative_fen}")
+                        current_fen = authoritative_fen
+                elif hasattr(self, 'board_synchronizer') and self.board_synchronizer:
+                    current_fen = self.board_synchronizer.get_current_fen()
+                else:
+                    # DANGEROUS: Only use custom board as last resort
+                    print("⚠️ WARNING: Using custom board FEN - potential corruption risk!")
+                    current_fen = self.board.to_fen(self.next_player)
+                
+                if current_fen:
+                    if hasattr(self, 'engine_white_instance') and self.engine_white_instance:
+                        self.engine_white_instance.set_position(current_fen)
+                        # Sync opening integration if available
+                        if hasattr(self.engine_white_instance, 'opening_integration') and self.engine_white_instance.opening_integration:
+                            self.engine_white_instance.opening_integration.sync_position(current_fen)
+                    if hasattr(self, 'engine_black_instance') and self.engine_black_instance:
+                        self.engine_black_instance.set_position(current_fen)
+                        # Sync opening integration if available
+                        if hasattr(self.engine_black_instance, 'opening_integration') and self.engine_black_instance.opening_integration:
+                            self.engine_black_instance.opening_integration.sync_position(current_fen)
+
+            except Exception as e:
+                print(f"Error synchronizing engine board states: {e}")
         
         # Check for check/checkmate after move
         # Since we already switched turns, self.next_player is now the opponent
@@ -1417,9 +2089,17 @@ class Game:
         except Exception as e:
             print(f"  ❌ Error during board state debug: {e}")
     
+
+    
     @safe_execute(fallback_value=None, context="game_cleanup")
     def cleanup(self):
         """Enhanced cleanup with proper resource management"""
+        # Defensive check for thread_cleanup_lock
+        if not hasattr(self, 'thread_cleanup_lock'):
+            print("⚠️ Warning: thread_cleanup_lock not found, initializing...")
+            from threading import Lock
+            self.thread_cleanup_lock = Lock()
+        
         with self.thread_cleanup_lock:
             # Stop and cleanup threads using thread manager
             if hasattr(self, 'engine_thread') and self.engine_thread:
@@ -1449,6 +2129,8 @@ class Game:
                     self.engine_move_queue.get_nowait()
             except queue.Empty:
                 pass
+            
+
             
             # Cleanup engines
             if hasattr(self, 'engine_white_instance') and self.engine_white_instance:

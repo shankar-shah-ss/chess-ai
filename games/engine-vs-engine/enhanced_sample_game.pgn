@@ -1,0 +1,33 @@
+[Event "Engine vs Engine"]
+[Site "Chess AI"]
+[Date "2025.08.12"]
+[Round "1"]
+[White "Engine (Super GM)"]
+[Black "Engine (Grandmaster)"]
+[Result "1/2-1/2"]
+[WhiteElo "2650"]
+[BlackElo "2450"]
+[WhiteTitle "Super GM Engine"]
+[BlackTitle "GM Engine"]
+[TimeControl "-"]
+[ECO "B50"]
+[Opening "Sicilian Defense"]
+[Variation "Najdorf Variation"]
+[Annotator "Chess AI Engine Analysis"]
+[PlyCount "48"]
+[EventDate "2025.08.12"]
+[Time "03:23:59"]
+[UTCTime "03:23:59"]
+[UTCDate "2025.08.12"]
+[Mode "TC"]
+[Generator "Chess AI v2.0 Enhanced PGN System"]
+[Termination "Draw by insufficient material"]
+[GameStats "Captures: 12, Checks: 4, Castling: 2"]
+
+1. e4 c5 2. Nf3 d6 3. Bb5+!? {Interesting bishop sacrifice} Bd7 4. Bxd7+ Qxd7 5.
+O-O Nc6 6. c3 Nf6 7. Re1 e6 8. e5⩲ {White gains space advantage} dxe5 9. Nxe5
+Nxe5 10. Rxe5 Be7 11. Qe2 O-O 12. Rd5 Qc6 13. Rd1 Rfd8 14. Rxd8+ Rxd8 15. Be3 b6
+16. Rd1 Rxd1+ 17. Qxd1 Qd7 18. Qxd7 Nxd7 19. Kf1 f6 20. Ke2 Kf7 21. Kd3 Ke8 22.
+Kc4 Kd8 23. Kb5 Kc7 24. Ka6 Kb8
+
+1/2-1/2

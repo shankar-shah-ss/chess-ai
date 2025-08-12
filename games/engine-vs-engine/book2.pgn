@@ -1,0 +1,22 @@
+[Event "Engine vs Engine"]
+[Site "Chess AI"]
+[Date "2025.08.10"]
+[Round "1"]
+[White "Engine (World Class/Engine Max)"]
+[Black "Engine (Club Player)"]
+[Result "*"]
+[WhiteElo "3200"]
+[BlackElo "2000"]
+[TimeControl "-"]
+[PlyCount "17"]
+[EventDate "2025.08.10"]
+[Time "05:07:34"]
+[UTCTime "05:07:34"]
+[UTCDate "2025.08.10"]
+[Mode "OTB"]
+[Generator "Chess AI v2.0"]
+
+1. c4 c6 2. Nf3 d5 3. e3 Nf6 4. Qc2 Nbd7 5. Nc3 e6 6. b3 Bd6 7. d4 b6 8. Bb2 Bb7
+9. Bd3
+
+*

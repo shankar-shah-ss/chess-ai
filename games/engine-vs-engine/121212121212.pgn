@@ -1,0 +1,26 @@
+[Event "Engine vs Engine"]
+[Site "Chess AI"]
+[Date "2025.08.12"]
+[Round "1"]
+[White "Engine (Candidate Master)"]
+[Black "Engine (Candidate Master)"]
+[Result "*"]
+[WhiteElo "2000"]
+[BlackElo "2000"]
+[WhiteTitle "Club Engine"]
+[BlackTitle "Club Engine"]
+[TimeControl "-"]
+[ECO "D00"]
+[Opening "Queen's Pawn Game"]
+[Annotator "Chess AI Engine Analysis"]
+[PlyCount "6"]
+[EventDate "2025.08.12"]
+[Time "12:21:28"]
+[UTCTime "12:21:28"]
+[UTCDate "2025.08.12"]
+[Mode "TC"]
+[Generator "Chess AI v2.0 Enhanced PGN System"]
+
+1. d4 d5 2. Nf3 c5 3. c4 dxc4
+
+*

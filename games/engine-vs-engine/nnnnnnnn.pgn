@@ -1,0 +1,27 @@
+[Event "Engine vs Engine"]
+[Site "Chess AI"]
+[Date "2025.08.12"]
+[Round "1"]
+[White "Engine (Candidate Master)"]
+[Black "Engine (Candidate Master)"]
+[Result "*"]
+[WhiteElo "2000"]
+[BlackElo "2000"]
+[WhiteTitle "Club Engine"]
+[BlackTitle "Club Engine"]
+[TimeControl "-"]
+[ECO "A04"]
+[Opening "Réti Opening"]
+[Variation "King's Indian Attack"]
+[Annotator "Chess AI Engine Analysis"]
+[PlyCount "3"]
+[EventDate "2025.08.12"]
+[Time "11:53:13"]
+[UTCTime "11:53:13"]
+[UTCDate "2025.08.12"]
+[Mode "TC"]
+[Generator "Chess AI v2.0 Enhanced PGN System"]
+
+1. Nf3 Nf6 2. c4
+
+*

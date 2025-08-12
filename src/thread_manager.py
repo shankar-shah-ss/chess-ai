@@ -231,7 +231,9 @@ class EngineWorkerThread(ManagedWorkerThread):
         self.move = self.engine.get_best_move()
         if self.move and not self.is_stopped():
             self.move_queue.put(self.move)
-            logger.info(f"Engine move calculated: {self.move}")
+            # Only log if it's an engine move (not a book move)
+            if not getattr(self.engine, '_last_move_was_book', False):
+                logger.info(f"🤖 Engine move: {self.move} (move #{getattr(self.engine, 'move_count', 0) + 1})")
 
 class EvaluationWorkerThread(ManagedWorkerThread):
     """Enhanced evaluation worker with proper cleanup"""

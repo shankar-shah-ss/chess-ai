@@ -1,0 +1,21 @@
+[Event "Engine vs Engine"]
+[Site "Chess AI"]
+[Date "2025.08.12"]
+[Round "1"]
+[White "Engine (Club Player)"]
+[Black "Engine (Club Player)"]
+[Result "*"]
+[WhiteElo "2000"]
+[BlackElo "2000"]
+[TimeControl "-"]
+[PlyCount "5"]
+[EventDate "2025.08.12"]
+[Time "03:05:19"]
+[UTCTime "03:05:19"]
+[UTCDate "2025.08.12"]
+[Mode "OTB"]
+[Generator "Chess AI v2.0"]
+
+1. d4 Nf6 2. Nf3 g6 3. c4
+
+*

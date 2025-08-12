@@ -67,9 +67,9 @@ class PGNManager:
         white_player = self.headers.get('White', 'Human')
         black_player = self.headers.get('Black', 'Human')
         
-        # Determine category based on player types
-        white_is_engine = white_player.lower() == 'engine'
-        black_is_engine = black_player.lower() == 'engine'
+        # Determine category based on player types (check if player name starts with "Engine")
+        white_is_engine = white_player.lower().startswith('engine')
+        black_is_engine = black_player.lower().startswith('engine')
         
         if white_is_engine and black_is_engine:
             category = 'engine-vs-engine'
@@ -706,15 +706,14 @@ class PGNManager:
                     success = self._console_save_fallback()
                 return success
             except Exception as e:
-                print(f"PGN save error: {e}")
+                # Silent error handling
                 return False
         
         # Run save operation in background thread
         save_thread = threading.Thread(target=save_async, daemon=True)
         save_thread.start()
         
-        # Return immediately to prevent UI blocking
-        print("📝 Saving game in background...")
+        # Return immediately to prevent UI blocking (no terminal output)
         return True
     
     def save_pgn_quick(self, custom_filename=None) -> bool:
@@ -763,18 +762,18 @@ class PGNManager:
                 with open(filepath, 'w', encoding='utf-8') as f:
                     f.write(self.generate_pgn())
                 
-                print(f"✅ Game saved to {category}: {filepath}")
+                # Silent success - no terminal output
                 return True
                 
             except Exception as e:
-                print(f"❌ Quick save failed: {e}")
+                # Silent failure - no terminal output
                 return False
         
         # Run save operation in background thread
         save_thread = threading.Thread(target=quick_save, daemon=True)
         save_thread.start()
         
-        print("📝 Quick saving game...")
+        # Return immediately (no terminal output)
         return True
     
     def _try_macos_dialog(self) -> bool:
@@ -805,7 +804,6 @@ class PGNManager:
                                       capture_output=True, text=True, timeout=10)
             
             if ask_result.returncode != 0 or ask_result.stdout.strip() != "Yes":
-                print("Save cancelled by user")
                 return False
             
             # Get filename using native dialog
@@ -820,12 +818,10 @@ class PGNManager:
                                            capture_output=True, text=True, timeout=10)
             
             if filename_result.returncode != 0:
-                print("Filename input cancelled")
                 return False
             
             filename = filename_result.stdout.strip()
             if not filename:
-                print("No filename provided")
                 return False
             
             # Ensure .pgn extension
@@ -851,16 +847,11 @@ class PGNManager:
                                                 capture_output=True, text=True, timeout=10)
                 
                 if overwrite_result.returncode != 0 or overwrite_result.stdout.strip() != "Yes":
-                    print("Overwrite cancelled")
                     return False
             
-            # Validate PGN before saving
+            # Validate PGN before saving (silent)
             is_valid, issues = self.validate_game_pgn()
-            if not is_valid:
-                print(f"⚠️  PGN validation failed:")
-                for issue in issues:
-                    print(f"   - {issue}")
-                print("   Saving anyway, but PGN may be invalid...")
+            # Continue saving regardless of validation issues
             
             # Write PGN file
             with open(filepath, 'w', encoding='utf-8') as f:
@@ -876,14 +867,12 @@ class PGNManager:
             subprocess.run(['osascript', '-e', success_script], 
                          capture_output=True, text=True, timeout=5)
             
-            print(f"✅ PGN saved to {category}: {filepath}")
+            # Silent success - no terminal output
             return True
             
         except subprocess.TimeoutExpired:
-            print("Dialog timeout - falling back to console")
             return self._console_save_fallback()
         except Exception as e:
-            print(f"macOS dialog error: {e}")
             return self._console_save_fallback()
     
     def _console_save_fallback(self) -> bool:
@@ -981,7 +970,10 @@ class PGNManager:
     def export_to_fen(self) -> str:
         """Export current position to FEN notation"""
         if self.board_state:
-            return self.board_state.get_fen()
+            # Need to determine the next player - this should be passed from the game context
+            # For now, we'll use a default or try to determine from the current state
+            next_player = getattr(self, 'current_player', 'white')
+            return self.board_state.to_fen(next_player)
         return ""
     
     def import_from_pgn(self, pgn_text: str) -> bool:
@@ -1116,9 +1108,40 @@ class PGNIntegration:
     
     def start_recording(self):
         """Start PGN recording for current game"""
-        # Determine player types
+        # Determine player types and ELO ratings
         white_player = "Engine" if self.game.engine_white else "Human"
         black_player = "Engine" if self.game.engine_black else "Human"
+        
+        # Get ELO ratings for engines - prioritize engine instance ELO, then game ELO
+        white_elo = ""
+        black_elo = ""
+        
+        if self.game.engine_white:
+            if hasattr(self.game, 'engine_white_instance') and self.game.engine_white_instance and hasattr(self.game.engine_white_instance, 'target_elo'):
+                white_elo = str(self.game.engine_white_instance.target_elo)
+            elif hasattr(self.game, 'white_elo'):
+                white_elo = str(self.game.white_elo)
+            else:
+                white_elo = str(getattr(self.game, 'target_elo', 2000))
+        
+        if self.game.engine_black:
+            if hasattr(self.game, 'engine_black_instance') and self.game.engine_black_instance and hasattr(self.game.engine_black_instance, 'target_elo'):
+                black_elo = str(self.game.engine_black_instance.target_elo)
+            elif hasattr(self.game, 'black_elo'):
+                black_elo = str(self.game.black_elo)
+            else:
+                black_elo = str(getattr(self.game, 'target_elo', 2000))
+        
+        # Add engine strength info to player names if they are engines
+        if self.game.engine_white:
+            white_engine_elo = int(white_elo) if white_elo else 2000
+            strength_category = self._get_strength_category_for_elo(white_engine_elo)
+            white_player = f"Engine ({strength_category})"
+            
+        if self.game.engine_black:
+            black_engine_elo = int(black_elo) if black_elo else 2000
+            strength_category = self._get_strength_category_for_elo(black_engine_elo)
+            black_player = f"Engine ({strength_category})"
         
         # Determine event type based on game mode
         mode_names = {
@@ -1134,8 +1157,195 @@ class PGNIntegration:
             event=event,
             site="Chess AI"
         )
+        
+        # Update ELO ratings in headers
+        if white_elo:
+            self.pgn_manager.headers['WhiteElo'] = white_elo
+        if black_elo:
+            self.pgn_manager.headers['BlackElo'] = black_elo
+        
+        # Add engine titles for engines
+        if self.game.engine_white and white_elo:
+            white_title = self._get_engine_title_for_elo(int(white_elo))
+            self.pgn_manager.headers['WhiteTitle'] = white_title
+            
+        if self.game.engine_black and black_elo:
+            black_title = self._get_engine_title_for_elo(int(black_elo))
+            self.pgn_manager.headers['BlackTitle'] = black_title
+        
+        # Set additional accurate details
+        self.pgn_manager.headers['Annotator'] = 'Chess AI Engine Analysis'
+        self.pgn_manager.headers['Generator'] = 'Chess AI v2.0 Enhanced PGN System'
+        
+        # Set accurate time control (currently no time control system)
+        self.pgn_manager.headers['TimeControl'] = '-'  # No time control
+        
+        # Set mode based on game type
+        if hasattr(self.game, 'game_mode'):
+            if self.game.game_mode == 0:  # Human vs Human
+                self.pgn_manager.headers['Mode'] = 'OTB'  # Over The Board
+            elif self.game.game_mode == 1:  # Human vs Engine
+                self.pgn_manager.headers['Mode'] = 'ICS'  # Internet Chess Server (human vs computer)
+            elif self.game.game_mode == 2:  # Engine vs Engine
+                self.pgn_manager.headers['Mode'] = 'TC'   # Tournament Computer vs Computer
+            
         self.recording = True
-        print("📝 PGN recording started")
+        print(f"📝 PGN recording started - {event}")
+    
+    def _get_strength_category_for_elo(self, elo):
+        """Get human-readable strength category for a specific ELO rating with detailed GM levels"""
+        if elo <= 900: return "Beginner"
+        elif elo <= 1000: return "Novice"
+        elif elo <= 1100: return "Amateur"
+        elif elo <= 1200: return "Club Beginner"
+        elif elo <= 1300: return "Club Player"
+        elif elo <= 1400: return "Club Intermediate"
+        elif elo <= 1500: return "Club Advanced"
+        elif elo <= 1600: return "Strong Club"
+        elif elo <= 1700: return "Tournament Player"
+        elif elo <= 1800: return "Expert"
+        elif elo <= 1900: return "Strong Expert"
+        elif elo <= 2000: return "Candidate Master"
+        elif elo <= 2100: return "National Master"
+        elif elo <= 2200: return "FIDE Master"
+        elif elo <= 2300: return "International Master"
+        elif elo <= 2400: return "Strong IM"
+        elif elo <= 2500: return "Grandmaster"
+        elif elo <= 2600: return "Strong GM"
+        elif elo <= 2700: return "Super GM"
+        elif elo <= 2800: return "Elite GM"
+        elif elo <= 2900: return "World Class GM"
+        elif elo <= 3000: return "World Championship Level"
+        elif elo <= 3200: return "Computer Strength"
+        else: return "Maximum Engine Strength"
+    
+    def _get_engine_title_for_elo(self, elo):
+        """Get appropriate chess title for engine based on ELO rating - matches player names"""
+        if elo <= 900: return "Beginner Engine"
+        elif elo <= 1000: return "Novice Engine"
+        elif elo <= 1100: return "Amateur Engine"
+        elif elo <= 1200: return "Club Beginner Engine"
+        elif elo <= 1300: return "Club Player Engine"
+        elif elo <= 1400: return "Club Intermediate Engine"
+        elif elo <= 1500: return "Club Advanced Engine"
+        elif elo <= 1600: return "Strong Club Engine"
+        elif elo <= 1700: return "Tournament Player Engine"
+        elif elo <= 1800: return "Expert Engine"
+        elif elo <= 1900: return "Strong Expert Engine"
+        elif elo <= 2000: return "Candidate Master Engine"
+        elif elo <= 2100: return "National Master Engine"
+        elif elo <= 2200: return "FIDE Master Engine"
+        elif elo <= 2300: return "International Master Engine"
+        elif elo <= 2400: return "Strong IM Engine"
+        elif elo <= 2500: return "Grandmaster Engine"
+        elif elo <= 2600: return "Strong GM Engine"
+        elif elo <= 2700: return "Super GM Engine"
+        elif elo <= 2800: return "Elite GM Engine"
+        elif elo <= 2900: return "World Class GM Engine"
+        elif elo <= 3000: return "World Championship Engine"
+        elif elo <= 3200: return "Computer Strength Engine"
+        else: return "Maximum Engine Strength"
+    
+    def _classify_opening(self, moves_list):
+        """Classify opening based on first few moves and return ECO code and name"""
+        if not moves_list:
+            return "", "", ""
+        
+        # Convert moves to simple notation for classification
+        move_sequence = []
+        for move_data in moves_list[:8]:  # Look at first 8 moves (4 for each side)
+            if isinstance(move_data, dict):
+                notation = move_data.get('notation', '')
+            else:
+                notation = str(move_data)
+            move_sequence.append(notation)
+        
+        # Basic opening classification based on common patterns
+        opening_patterns = {
+            # King's Pawn Openings (E00-E99)
+            ('e4', 'e5'): ('C20', 'King\'s Pawn Game', ''),
+            ('e4', 'e5', 'Nf3', 'Nc6'): ('C20', 'King\'s Pawn Game', 'King\'s Knight Opening'),
+            ('e4', 'e5', 'Nf3', 'Nc6', 'Bb5'): ('C60', 'Ruy Lopez', 'Spanish Opening'),
+            ('e4', 'e5', 'Nf3', 'Nc6', 'Bc4'): ('C50', 'Italian Game', ''),
+            ('e4', 'e5', 'Nf3', 'f5'): ('C30', 'King\'s Gambit', ''),
+            ('e4', 'e5', 'f4'): ('C30', 'King\'s Gambit', ''),
+            
+            # Sicilian Defense (B20-B99)
+            ('e4', 'c5'): ('B20', 'Sicilian Defense', ''),
+            ('e4', 'c5', 'Nf3'): ('B20', 'Sicilian Defense', 'Open Sicilian'),
+            ('e4', 'c5', 'Nf3', 'd6'): ('B50', 'Sicilian Defense', 'Najdorf Variation'),
+            ('e4', 'c5', 'Nf3', 'Nc6'): ('B30', 'Sicilian Defense', 'Old Sicilian'),
+            
+            # French Defense (C00-C19)
+            ('e4', 'e6'): ('C00', 'French Defense', ''),
+            ('e4', 'e6', 'd4', 'd5'): ('C02', 'French Defense', 'Advance Variation'),
+            
+            # Caro-Kann Defense (B10-B19)
+            ('e4', 'c6'): ('B10', 'Caro-Kann Defense', ''),
+            ('e4', 'c6', 'd4', 'd5'): ('B12', 'Caro-Kann Defense', 'Advance Variation'),
+            
+            # Queen's Pawn Openings (D00-D99)
+            ('d4', 'd5'): ('D00', 'Queen\'s Pawn Game', ''),
+            ('d4', 'd5', 'c4'): ('D06', 'Queen\'s Gambit', ''),
+            ('d4', 'd5', 'c4', 'dxc4'): ('D20', 'Queen\'s Gambit Accepted', ''),
+            ('d4', 'd5', 'c4', 'e6'): ('D30', 'Queen\'s Gambit Declined', ''),
+            ('d4', 'd5', 'c4', 'c6'): ('D31', 'Queen\'s Gambit Declined', 'Semi-Slav Defense'),
+            
+            # Indian Defenses (E00-E99)
+            ('d4', 'Nf6'): ('A40', 'Queen\'s Pawn Game', ''),
+            ('d4', 'Nf6', 'c4', 'e6'): ('E00', 'Queen\'s Indian Defense', ''),
+            ('d4', 'Nf6', 'c4', 'g6'): ('E60', 'King\'s Indian Defense', ''),
+            ('d4', 'Nf6', 'c4', 'c5'): ('A30', 'English Opening', 'Symmetrical Variation'),
+            
+            # English Opening (A10-A39)
+            ('c4',): ('A10', 'English Opening', ''),
+            ('c4', 'e5'): ('A20', 'English Opening', 'King\'s English Variation'),
+            ('c4', 'c5'): ('A30', 'English Opening', 'Symmetrical Variation'),
+            ('c4', 'Nf6'): ('A15', 'English Opening', 'Anglo-Indian Defense'),
+            
+            # Réti Opening (A04-A09)
+            ('Nf3',): ('A04', 'Réti Opening', ''),
+            ('Nf3', 'd5'): ('A06', 'Réti Opening', ''),
+            ('Nf3', 'Nf6'): ('A04', 'Réti Opening', 'King\'s Indian Attack'),
+            
+            # Bird's Opening (A02-A03)
+            ('f4',): ('A02', 'Bird\'s Opening', ''),
+            
+            # Uncommon first moves
+            ('b3',): ('A01', 'Nimzo-Larsen Attack', ''),
+            ('g3',): ('A00', 'Benko\'s Opening', ''),
+            ('Nc3',): ('A00', 'Van Geet Opening', ''),
+        }
+        
+        # Try to match patterns from longest to shortest
+        for length in range(min(8, len(move_sequence)), 0, -1):
+            pattern = tuple(move_sequence[:length])
+            if pattern in opening_patterns:
+                eco, opening, variation = opening_patterns[pattern]
+                return eco, opening, variation
+        
+        # Default classification
+        if move_sequence:
+            first_move = move_sequence[0]
+            if first_move in ['e4']:
+                return 'C20', 'King\'s Pawn Game', ''
+            elif first_move in ['d4']:
+                return 'D00', 'Queen\'s Pawn Game', ''
+            elif first_move in ['c4']:
+                return 'A10', 'English Opening', ''
+            elif first_move in ['Nf3']:
+                return 'A04', 'Réti Opening', ''
+            else:
+                return 'A00', 'Irregular Opening', ''
+        
+        return "", "", ""
+    
+    def update_opening_classification(self):
+        """Update opening classification based on current moves"""
+        if len(self.pgn_manager.moves) >= 2:  # At least one move for each side
+            eco, opening, variation = self._classify_opening(self.pgn_manager.moves)
+            if eco:
+                self.pgn_manager.set_opening_info(eco, opening, variation)
     
     def record_move(self, move, piece, captured_piece=None):
         """Record a move in PGN format with full feature support"""
@@ -1170,14 +1380,77 @@ class PGNIntegration:
             is_en_passant=is_en_passant,
             board_state=self.game.board
         )
+        
+        # Update opening classification after each move (for first 8 moves)
+        if len(self.pgn_manager.moves) <= 8:
+            self.update_opening_classification()
     
     def end_game(self, result: str, reason: str = ""):
-        """End the game and set result"""
+        """End the game and set result with accurate termination details"""
         if not self.recording:
             return
         
-        self.pgn_manager.set_result(result, reason)
-        print(f"📝 Game ended: {result} ({reason})")
+        # Enhance termination reason based on game state
+        enhanced_reason = self._get_enhanced_termination_reason(result, reason)
+        
+        # Final opening classification update
+        self.update_opening_classification()
+        
+        # Set additional game statistics
+        self._set_final_game_statistics()
+        
+        self.pgn_manager.set_result(result, enhanced_reason)
+        print(f"📝 Game ended: {result} ({enhanced_reason})")
+    
+    def _get_enhanced_termination_reason(self, result: str, reason: str) -> str:
+        """Get enhanced termination reason based on game state and result"""
+        if reason:
+            return reason
+        
+        # Determine reason based on result and game state
+        if result == "1-0":
+            if hasattr(self.game.board, 'is_checkmate') and self.game.board.is_checkmate('black'):
+                return "White wins by checkmate"
+            elif hasattr(self.game.board, 'is_stalemate') and self.game.board.is_stalemate('black'):
+                return "Black is stalemated"
+            else:
+                return "White wins"
+        elif result == "0-1":
+            if hasattr(self.game.board, 'is_checkmate') and self.game.board.is_checkmate('white'):
+                return "Black wins by checkmate"
+            elif hasattr(self.game.board, 'is_stalemate') and self.game.board.is_stalemate('white'):
+                return "White is stalemated"
+            else:
+                return "Black wins"
+        elif result == "1/2-1/2":
+            if hasattr(self.game.board, 'is_stalemate'):
+                if self.game.board.is_stalemate('white') or self.game.board.is_stalemate('black'):
+                    return "Draw by stalemate"
+            return "Draw by agreement"
+        else:  # result == "*"
+            return "Game in progress"
+    
+    def _set_final_game_statistics(self):
+        """Set final game statistics in PGN headers"""
+        # Update ply count (should already be accurate)
+        self.pgn_manager.headers['PlyCount'] = str(len(self.pgn_manager.moves))
+        
+        # Add game duration if available
+        duration = self.pgn_manager.get_game_duration()
+        if duration:
+            self.pgn_manager.headers['GameDuration'] = duration
+        
+        # Add move statistics as comments
+        stats = self.pgn_manager.get_statistics()
+        if stats:
+            stats_comment = f"Captures: {stats['captures']}, Checks: {stats['checks']}, Castling: {stats['castling_moves']}"
+            if stats['promotions'] > 0:
+                stats_comment += f", Promotions: {stats['promotions']}"
+            if stats['en_passant_captures'] > 0:
+                stats_comment += f", En passant: {stats['en_passant_captures']}"
+            
+            # Add as a header comment (non-standard but informative)
+            self.pgn_manager.headers['GameStats'] = stats_comment
     
     def save_game(self) -> bool:
         """Save the current game with dialog (non-blocking)"""

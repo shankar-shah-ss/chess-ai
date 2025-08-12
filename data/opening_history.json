@@ -1,0 +1,28 @@
+{
+  "opening_history": {
+    "1500": [
+      {
+        "opening_moves": [
+          "e2e4",
+          "e7e5",
+          "g1f3",
+          "b8c6"
+        ],
+        "opening_signature": "e2e4_e7e5_g1f3_b8c6",
+        "elo_level": 1500,
+        "timestamp": 1754928878.591112,
+        "game_number": 1
+      }
+    ]
+  },
+  "game_counters": {
+    "1500": 1
+  },
+  "stats": {
+    "total_games_tracked": 1,
+    "openings_blocked": 0,
+    "unique_openings_played": 1,
+    "diversity_score": 1.0
+  },
+  "last_updated": 1754928878.591525
+}
