@@ -1,0 +1,27 @@
+[Event "Engine vs Engine"]
+[Site "Chess AI"]
+[Date "2025.08.14"]
+[Round "1"]
+[White "Engine (Candidate Master)"]
+[Black "Engine (Candidate Master)"]
+[Result "*"]
+[WhiteElo "2000"]
+[BlackElo "2000"]
+[WhiteTitle "Candidate Master Engine"]
+[BlackTitle "Candidate Master Engine"]
+[TimeControl "-"]
+[ECO "C20"]
+[Opening "King's Pawn Game"]
+[Annotator "Chess AI Engine Analysis"]
+[PlyCount "22"]
+[EventDate "2025.08.14"]
+[Time "15:55:17"]
+[UTCTime "15:55:17"]
+[UTCDate "2025.08.14"]
+[Mode "TC"]
+[Generator "Chess AI v2.0 Enhanced PGN System"]
+
+1. e4 b6 2. d4 Bb7 3. Nc3 e6 4. Nf3 Bb4 5. Bd3 Nf6 6. Qe2 d6 7. a3 Bxc3+ 8. bxc3
+Nbd7 9. O-O O-O 10. Bg5 h6 11. Bh4 Re8
+
+*

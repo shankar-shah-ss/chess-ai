@@ -6,7 +6,11 @@
     "cache_ttl_minutes": 30,
     "move_selection": "intelligent_random",
     "variety_enabled": true,
-    "min_games_gap": 10
+    "min_games_gap": 10,
+    "max_retries": 3,
+    "base_retry_delay": 1.0,
+    "connection_timeout": 15,
+    "fallback_enabled": true
   },
   "move_selection_options": {
     "best": "Select move with highest win rate and popularity",
@@ -21,6 +25,10 @@
     "cache_ttl_minutes": "How long to cache position data (minutes)",
     "move_selection": "Strategy for selecting moves: best, popular, random, or intelligent_random",
     "variety_enabled": "Enable intelligent opening variety management",
-    "min_games_gap": "Minimum games before repeating the same opening"
+    "min_games_gap": "Minimum games before repeating the same opening",
+    "max_retries": "Maximum number of retry attempts for failed requests",
+    "base_retry_delay": "Base delay for exponential backoff retry strategy (seconds)",
+    "connection_timeout": "Connection timeout for HTTP requests (seconds)",
+    "fallback_enabled": "Enable fallback mechanisms when network is unavailable"
   }
 }

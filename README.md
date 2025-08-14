@@ -155,7 +155,7 @@ chess-ai/
 ├── data/                         # Application data
 ├── games/                        # Saved games
 ├── assets/                       # Images and sounds
-├── backup_old_system/            # Previous implementations
+├── books/                        # Opening book database
 └── README.md                     # This file
 ```
 

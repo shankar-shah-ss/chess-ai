@@ -7,6 +7,10 @@ from threading import Lock
 from dataclasses import dataclass
 import logging
 import random
+import sqlite3
+import os
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,12 @@ class LichessOpeningBook:
         self.variety_enabled = self.config.get('variety_enabled', True)
         self.min_games_gap = self.config.get('min_games_gap', 10)
         
+        # Network resilience settings
+        self.max_retries = self.config.get('max_retries', 3)
+        self.base_retry_delay = self.config.get('base_retry_delay', 1.0)
+        self.connection_timeout = self.config.get('connection_timeout', 15)
+        self.fallback_enabled = self.config.get('fallback_enabled', True)
+        
         # Initialize variety manager if available
         self.variety_manager = None
         if VARIETY_MANAGER_AVAILABLE and self.variety_enabled:
@@ -73,8 +83,23 @@ class LichessOpeningBook:
         self.base_url = "https://explorer.lichess.ovh"
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'ChessAI-LichessOpening/1.0'
+            'User-Agent': 'ChessAI-LichessOpening/1.0',
+            'Accept': 'application/json',
+            'Connection': 'keep-alive'
         })
+        
+        # Configure retry strategy
+        retry_strategy = Retry(
+            total=3,
+            status_forcelist=[429, 500, 502, 503, 504],
+            backoff_factor=1,
+            allowed_methods=["HEAD", "GET", "OPTIONS"]
+        )
+        
+        # Mount adapter with retry strategy
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
         
         # Caching and rate limiting
         self.cache = {}  # fen -> (data, timestamp)
@@ -87,10 +112,43 @@ class LichessOpeningBook:
             'api_requests': 0,
             'successful_moves': 0,
             'failed_requests': 0,
-            'total_requests': 0
+            'total_requests': 0,
+            'fallback_requests': 0
         }
         
+        # Network status tracking
+        self.network_available = True
+        self.last_network_check = 0
+        self.network_check_interval = 300  # Check every 5 minutes
+        
+        # Fallback database setup
+        self.fallback_db_path = self.config.get('fallback_db_path', 'books/openings.db')
+        self.fallback_available = False
+        self._init_fallback_database()
+        
         logger.debug("Pure Lichess opening book initialized")
+    
+    def _init_fallback_database(self):
+        """Initialize fallback local database"""
+        try:
+            if os.path.exists(self.fallback_db_path):
+                # Test database connection
+                conn = sqlite3.connect(self.fallback_db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+                tables = cursor.fetchall()
+                conn.close()
+                
+                if tables:
+                    self.fallback_available = True
+                    logger.info(f"📚 Fallback opening database available: {self.fallback_db_path}")
+                else:
+                    logger.warning(f"Fallback database exists but has no tables: {self.fallback_db_path}")
+            else:
+                logger.warning(f"Fallback database not found: {self.fallback_db_path}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize fallback database: {e}")
+            self.fallback_available = False
     
     def _rate_limit(self):
         """Ensure respectful rate limiting"""
@@ -101,8 +159,72 @@ class LichessOpeningBook:
             time.sleep(sleep_time)
         self.last_request_time = time.time()
     
+    def _check_network_connectivity(self) -> bool:
+        """Check if network connectivity is available"""
+        current_time = time.time()
+        
+        # Only check periodically to avoid overhead
+        if current_time - self.last_network_check < self.network_check_interval:
+            return self.network_available
+        
+        try:
+            # Quick connectivity test to a reliable endpoint
+            response = self.session.head("https://www.google.com", timeout=5)
+            self.network_available = response.status_code == 200
+            logger.debug(f"Network connectivity check: {'Available' if self.network_available else 'Unavailable'}")
+        except Exception:
+            self.network_available = False
+            logger.debug("Network connectivity check: Unavailable")
+        
+        self.last_network_check = current_time
+        return self.network_available
+    
+    def _fetch_fallback_data(self, fen: str) -> Optional[Dict]:
+        """Fetch position data from local fallback database"""
+        if not self.fallback_available:
+            return None
+        
+        try:
+            conn = sqlite3.connect(self.fallback_db_path)
+            cursor = conn.cursor()
+            
+            # Query for the position
+            cursor.execute("SELECT moves FROM opening_moves WHERE fen = ?", (fen,))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                moves_json = result[0]
+                moves_data = json.loads(moves_json)
+                
+                # Convert to Lichess API format
+                lichess_format = {
+                    'moves': []
+                }
+                
+                for move_data in moves_data:
+                    # Convert from local format to Lichess format
+                    lichess_move = {
+                        'uci': move_data['move'],
+                        'white': move_data['wins'],
+                        'draws': move_data['draws'],
+                        'black': move_data['losses'],
+                        'averageRating': move_data.get('avg_rating', 2400)
+                    }
+                    lichess_format['moves'].append(lichess_move)
+                
+                logger.debug(f"📚 Fallback data found for position: {len(lichess_format['moves'])} moves")
+                self.stats['fallback_requests'] += 1
+                return lichess_format
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Error querying fallback database: {e}")
+            return None
+    
     def _fetch_position_data(self, fen: str) -> Optional[Dict]:
-        """Fetch position data from Lichess masters database"""
+        """Fetch position data from Lichess masters database with robust error handling"""
         if not self.enabled:
             return None
         
@@ -114,42 +236,138 @@ class LichessOpeningBook:
                 self.stats['cache_hits'] += 1
                 return cached_data
         
+        # Check network connectivity before making requests
+        if not self._check_network_connectivity():
+            logger.warning("Network connectivity unavailable, trying fallback database")
+            if self.fallback_enabled and self.fallback_available:
+                fallback_data = self._fetch_fallback_data(fen)
+                if fallback_data:
+                    logger.info("📚 Using fallback database for opening move")
+                    return fallback_data
+            self.stats['failed_requests'] += 1
+            return None
+        
         # Rate limit requests
         self._rate_limit()
         
-        try:
-            # Prepare request parameters
-            params = {}
-            if fen != "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1":
-                params['fen'] = fen
-            
-            # Make request to Lichess
-            url = f"{self.base_url}/masters"
-            logger.debug(f"Making request to: {url} with params: {params}")
-            response = self.session.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            
-            data = response.json()
-            logger.debug(f"Received data: {data}")
-            
-            # Cache the result
-            self.cache[cache_key] = (data, time.time())
-            self.stats['api_requests'] += 1
-            
-            return data
-            
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Request failed: {e}")
-            self.stats['failed_requests'] += 1
-            return None
-        except json.JSONDecodeError as e:
-            logger.warning(f"JSON decode failed: {e}")
-            self.stats['failed_requests'] += 1
-            return None
-        except Exception as e:
-            logger.warning(f"Unexpected error: {e}")
-            self.stats['failed_requests'] += 1
-            return None
+        # Retry logic with exponential backoff
+        max_retries = self.max_retries
+        base_delay = self.base_retry_delay
+        
+        for attempt in range(max_retries):
+            try:
+                # Prepare request parameters
+                params = {}
+                if fen != "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1":
+                    params['fen'] = fen
+                
+                # Make request to Lichess
+                url = f"{self.base_url}/masters"
+                logger.debug(f"Making request (attempt {attempt + 1}/{max_retries}): {url} with params: {params}")
+                
+                response = self.session.get(
+                    url, 
+                    params=params, 
+                    timeout=self.connection_timeout,
+                    stream=False  # Don't stream to avoid connection issues
+                )
+                response.raise_for_status()
+                
+                data = response.json()
+                logger.debug(f"Received data: {data}")
+                
+                # Cache the result
+                self.cache[cache_key] = (data, time.time())
+                self.stats['api_requests'] += 1
+                
+                return data
+                
+            except requests.exceptions.ConnectionError as e:
+                logger.warning(f"Connection error (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                    logger.info(f"Retrying in {delay:.1f} seconds...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    logger.error("Max retries reached for connection error - marking network as unavailable")
+                    self.network_available = False
+                    self.last_network_check = time.time()
+                    
+                    # Try fallback database
+                    if self.fallback_enabled and self.fallback_available:
+                        logger.info("🔄 Attempting fallback database after connection failure")
+                        fallback_data = self._fetch_fallback_data(fen)
+                        if fallback_data:
+                            logger.info("📚 Successfully using fallback database")
+                            return fallback_data
+                    
+                    self.stats['failed_requests'] += 1
+                    return None
+                    
+            except requests.exceptions.Timeout as e:
+                logger.warning(f"Request timeout (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.info(f"Retrying in {delay:.1f} seconds...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    logger.error("Max retries reached for timeout")
+                    
+                    # Try fallback database
+                    if self.fallback_enabled and self.fallback_available:
+                        logger.info("🔄 Attempting fallback database after timeout")
+                        fallback_data = self._fetch_fallback_data(fen)
+                        if fallback_data:
+                            logger.info("📚 Successfully using fallback database")
+                            return fallback_data
+                    
+                    self.stats['failed_requests'] += 1
+                    return None
+                    
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code in [429, 500, 502, 503, 504]:
+                    logger.warning(f"HTTP error {e.response.status_code} (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt) + random.uniform(0, 2)
+                        logger.info(f"Retrying in {delay:.1f} seconds...")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        logger.error(f"Max retries reached for HTTP error {e.response.status_code}")
+                        self.stats['failed_requests'] += 1
+                        return None
+                else:
+                    logger.error(f"Non-retryable HTTP error: {e}")
+                    self.stats['failed_requests'] += 1
+                    return None
+                    
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Request failed (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.info(f"Retrying in {delay:.1f} seconds...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    logger.error("Max retries reached for request error")
+                    self.stats['failed_requests'] += 1
+                    return None
+                    
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON decode failed: {e}")
+                self.stats['failed_requests'] += 1
+                return None
+                
+            except Exception as e:
+                logger.error(f"Unexpected error: {e}")
+                self.stats['failed_requests'] += 1
+                return None
+        
+        # Should not reach here, but just in case
+        self.stats['failed_requests'] += 1
+        return None
     
     def _convert_lichess_moves(self, lichess_data: Dict) -> List[LichessMove]:
         """Convert Lichess API response to LichessMove objects"""
@@ -509,6 +727,12 @@ class LichessOpeningBook:
         
         stats['cache_size'] = len(self.cache)
         stats['enabled'] = self.enabled
+        stats['network_available'] = self.network_available
+        stats['last_network_check'] = self.last_network_check
+        stats['fallback_available'] = self.fallback_available
+        
+        if total_requests > 0:
+            stats['fallback_usage_rate'] = (self.stats['fallback_requests'] / total_requests) * 100
         
         return stats
     
@@ -524,6 +748,11 @@ class LichessOpeningBook:
     def enable(self):
         """Enable the opening book"""
         self.enabled = True
+    
+    def force_network_check(self) -> bool:
+        """Force a network connectivity check"""
+        self.last_network_check = 0  # Reset to force check
+        return self._check_network_connectivity()
     
     def start_new_game(self, elo_level: int, game_id: str = None):
         """Start tracking a new game for variety management"""
